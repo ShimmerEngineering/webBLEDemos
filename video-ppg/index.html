@@ -134,8 +134,12 @@
   <div id="chartContainer">
     <canvas id="gyroChart" height="200"></canvas>
   </div>
-
+<p id="hrDisclaimer" style="max-width: 480px; margin: 10px auto; color: #f39c12; font-size: 14px; font-family: sans-serif;">
+⚠️ <strong>Note:</strong> This heart rate estimation is for demo purposes only and has not been validated.
+</p>
   <script>
+  const signalBuffer = []; // raw PPG signal
+const peakTimestamps = []; // timestamps of detected peaks
     let selectedDevice = null;
     let server = null;
     let rxCharacteristic = null;
@@ -233,7 +237,7 @@
 
   try {
     // 1. Send sampling rate: 0x05 + low/high bytes of 32768/51.2 = 640 = 0x0280
-    const samplingCommand = new Uint8Array([0x05, 0x80, 0x02]);
+    const samplingCommand = new Uint8Array([0x05, 0x00, 0x01]);
     await rxCharacteristic.writeValue(samplingCommand);
     console.log("Sent 0x05 command");
     await sleep(200);
@@ -293,7 +297,12 @@ function handleNotifications(event) {
 
       // Extract PPG signal (last 2 bytes)
       const ppg = view.getInt16(4, true);
-      updatePPGChart(ppg);
+		updatePPGChart(ppg);
+
+		const bpm = detectHeartRate(ppg);
+		if (bpm) {
+		  document.getElementById("statusConsole").textContent = `❤️ BPM: ${bpm}`;
+		}
 
       offset += 6;
     } else {
@@ -352,6 +361,40 @@ document.getElementById("closeIntroBtn").addEventListener("click", () => {
   }
   document.getElementById("introOverlay").style.display = "none";
 });
+function detectHeartRate(ppgValue) {
+  const now = Date.now();
+
+  // Smooth signal with simple moving average over 5 points
+  signalBuffer.push(ppgValue);
+  if (signalBuffer.length > 10) signalBuffer.shift();
+  const smoothed = signalBuffer.reduce((a, b) => a + b, 0) / signalBuffer.length;
+
+  // Peak detection: check if value is a local maximum above dynamic threshold
+  const threshold = 30;
+  if (
+    signalBuffer.length >= 3 &&
+    signalBuffer[signalBuffer.length - 2] > signalBuffer[signalBuffer.length - 3] &&
+    signalBuffer[signalBuffer.length - 2] > smoothed + threshold
+  ) {
+    const timeSinceLastPeak = now - (peakTimestamps[peakTimestamps.length - 1] || 0);
+    if (timeSinceLastPeak > 300) { // debounce (min 200 bpm max)
+      peakTimestamps.push(now);
+      if (peakTimestamps.length > 10) peakTimestamps.shift();
+
+      if (peakTimestamps.length >= 2) {
+        const intervals = peakTimestamps
+          .slice(1)
+          .map((t, i) => t - peakTimestamps[i]);
+        const avgInterval = intervals.reduce((a, b) => a + b, 0) / intervals.length;
+        const bpm = 60000 / avgInterval;
+
+        return Math.round(bpm);
+      }
+    }
+  }
+
+  return null;
+}
 
   </script>
 </body>
