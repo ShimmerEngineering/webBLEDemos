@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>BLE + YouTube + Gyro Plot</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      background: #000;
+      color: white;
+      font-family: sans-serif;
+      text-align: center;
+    }
+
+    #controls {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    button {
+      padding: 10px 16px;
+      font-size: 16px;
+      border-radius: 6px;
+      border: none;
+      cursor: pointer;
+    }
+
+    #scanBtn { background: #2196F3; color: white; }
+    #connectBtn { background: #4CAF50; color: white; }
+    #streamBtn { background: #FFC107; color: black; }
+    #disconnectBtn { background: #f44336; color: white; }
+
+    #deviceName {
+      margin: 10px;
+    }
+
+    iframe {
+      margin: 20px auto;
+      display: block;
+      width: 100%;
+      max-width: 480px;
+      aspect-ratio: 16 / 9;
+      border: none;
+    }
+
+    #chartContainer {
+      max-width: 480px;
+      margin: 20px auto;
+    }
+	#introOverlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0,0,0,0.9);
+  color: #fff;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 9999;
+}
+
+.introContent {
+  max-width: 500px;
+  padding: 20px;
+  background: #111;
+  border: 2px solid #fff;
+  border-radius: 10px;
+  text-align: left;
+  font-size: 16px;
+}
+
+.introContent h2 {
+  margin-top: 0;
+  color: #f44336;
+}
+
+.introContent ul {
+  padding-left: 20px;
+}
+
+.introContent .btnHint {
+  background: #444;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: monospace;
+}
+
+  </style>
+</head>
+<body>
+<div id="introOverlay">
+  <div class="introContent">
+    <h2>Shimmer3R GSR+ PPG Demo</h2>
+    <p>This app lets you visualize your heart rate signal using a PPG sensor (Shimmer3R GSR+).</p>
+    <ul>
+      <li><strong>Scan & connect:</strong> Tap <span class="btnHint">🔍 Scan</span> and <span class="btnHint">🔗 Connect</span> to your BLE device.</li>
+      <li><strong>Start streaming:</strong> Tap <span class="btnHint">📡 Start Streaming</span> to view real-time PPG data.</li>
+      <li><strong>Watch:</strong> Enjoy the YouTube video while monitoring your signal.</li>
+      <li><strong>Live chart:</strong> See the PPG waveform updating live below the video.</li>
+    </ul>
+	    <!-- ✅ Minimum Requirements -->
+    <p><strong>Requirements:</strong></p>
+    <ul>
+      <li><strong>Device:</strong> Shimmer3R GSR+</li>
+      <li><strong>Firmware:</strong> Version ≥ <code>v1.0.22</code></li>
+    </ul>
+    <img src="Shimmer3R_GSR.png" alt="Shimmer3R GSR+ Required" style="width: 100%; max-width: 300px; display: block; margin: 10px auto;" />
+
+    <div style="margin-top: 10px; display: flex; align-items: center; gap: 10px;">
+      <input type="checkbox" id="dontShowAgain" />
+      <label for="dontShowAgain">Don't show this again</label>
+    </div>
+    <button id="closeIntroBtn">Got it!</button>
+  </div>
+</div>
+
+  <div id="controls">
+    <button id="scanBtn">🔍 Scan Bluetooth</button>
+    <button id="connectBtn" disabled>🔗 Connect</button>
+    <button id="streamBtn" disabled>📡 Start Streaming</button>
+    <button id="disconnectBtn" disabled>❌ Disconnect</button>
+  </div>
+
+  <p id="deviceName">No device selected</p>
+<p id="statusConsole" style="color: #0f0; font-family: monospace; margin: 5px 0;"></p>
+
+  <iframe 
+    src="https://www.youtube.com/embed/CdOQEQ3GF6c"
+    allowfullscreen>
+  </iframe>
+
+  <div id="chartContainer">
+    <canvas id="gyroChart" height="200"></canvas>
+  </div>
+<p id="hrDisclaimer" style="max-width: 480px; margin: 10px auto; color: #f39c12; font-size: 14px; font-family: sans-serif;">
+⚠️ <strong>Note:</strong> This heart rate estimation is for demo purposes only and has not been validated.
+</p>
+  <script>
+  const signalBuffer = []; // raw PPG signal
+const peakTimestamps = []; // timestamps of detected peaks
+    let selectedDevice = null;
+    let server = null;
+    let rxCharacteristic = null;
+    let txCharacteristic = null;
+    let receiveBuffer = new Uint8Array(0);
+    let latestGyroZ = 0;
+    let lastPrintedTime = 0;
+
+    const SERVICE_UUID = '65333333-a115-11e2-9e9a-0800200ca100';
+    const CHAR_RX_UUID = '65333333-a115-11e2-9e9a-0800200ca102';
+    const CHAR_TX_UUID = '65333333-a115-11e2-9e9a-0800200ca101';
+
+    // BLE handlers
+    document.getElementById("scanBtn").addEventListener("click", async () => {
+      try {
+        selectedDevice = await navigator.bluetooth.requestDevice({
+          filters: [{ services: [SERVICE_UUID] }]
+        });
+        document.getElementById("deviceName").textContent =
+          `Selected: ${selectedDevice.name || 'Unnamed Device'}`;
+        document.getElementById("connectBtn").disabled = false;
+      } catch (error) {
+        console.error("Scan failed:", error);
+      }
+    });
+
+    document.getElementById("connectBtn").addEventListener("click", async () => {
+      try {
+        server = await selectedDevice.gatt.connect();
+        const service = await server.getPrimaryService(SERVICE_UUID);
+        rxCharacteristic = await service.getCharacteristic(CHAR_RX_UUID);
+        txCharacteristic = await service.getCharacteristic(CHAR_TX_UUID);
+
+        await txCharacteristic.startNotifications();
+        txCharacteristic.addEventListener('characteristicvaluechanged', handleNotifications);
+
+        document.getElementById("streamBtn").disabled = false;
+        document.getElementById("disconnectBtn").disabled = false;
+		document.getElementById("statusConsole").textContent = `✅ Connected to: ${selectedDevice.name || 'Unnamed Device'}`;
+
+      } catch (error) {
+        console.error("Connection failed:", error);
+      }
+    });
+
+   document.getElementById("disconnectBtn").addEventListener("click", async () => {
+  try {
+    // ✅ Only attempt stopNotifications if connected and characteristic is available
+    if (txCharacteristic && selectedDevice?.gatt?.connected) {
+      try {
+        await txCharacteristic.stopNotifications();
+        txCharacteristic.removeEventListener('characteristicvaluechanged', handleNotifications);
+        console.log("✅ Notifications stopped");
+      } catch (notifyError) {
+        console.warn("⚠️ Error stopping notifications (ignored):", notifyError);
+      }
+    }
+
+    // ✅ Disconnect if still connected
+    if (selectedDevice?.gatt?.connected) {
+      selectedDevice.gatt.disconnect();
+      console.log("✅ Device disconnected cleanly");
+    } else {
+      console.log("ℹ️ Device already disconnected");
+    }
+  } catch (err) {
+    console.warn("❌ Disconnect error:", err);
+  }
+
+  // ✅ Reset UI state
+  document.getElementById("deviceName").textContent = "No device selected";
+  document.getElementById("connectBtn").disabled = true;
+  document.getElementById("streamBtn").disabled = true;
+  document.getElementById("disconnectBtn").disabled = true;
+  document.getElementById("statusConsole").textContent = `🔌 Disconnected`;
+
+  // ✅ Reset all references
+  selectedDevice = null;
+  server = null;
+  rxCharacteristic = null;
+  txCharacteristic = null;
+
+  // Optional: stop paddle movement or cleanup animation
+  leftPressed = false;
+  rightPressed = false;
+});
+
+
+
+    document.getElementById("streamBtn").addEventListener("click", async () => {
+  if (!rxCharacteristic) {
+    alert("Not connected to device.");
+    return;
+  }
+
+  try {
+    // 1. Send sampling rate: 0x05 + low/high bytes of 32768/51.2 = 640 = 0x0280
+    const samplingCommand = new Uint8Array([0x05, 0x00, 0x01]);
+    await rxCharacteristic.writeValue(samplingCommand);
+    console.log("Sent 0x05 command");
+    await sleep(200);
+
+    // 2. Send sensor config: 0x08 0x00 0x02 0x00 (4 bytes) 
+    const configCommand = new Uint8Array([0x08, 0x00, 0x01, 0x00]); 
+    await rxCharacteristic.writeValue(configCommand);
+    console.log("Sent 0x08 command");
+    await sleep(200);
+
+    // 3. (Optional) Skip 0x5E if unknown
+    const expPower = new Uint8Array([0x5E, 0x01]);
+    await rxCharacteristic.writeValue(expPower);
+    console.log("Sent 0x5E command");
+    await sleep(200);
+
+    // 4. Start streaming: 0x07
+    const startCommand = new Uint8Array([0x07]);
+    await rxCharacteristic.writeValue(startCommand);
+    console.log("Sent 0x07 (start streaming)");
+  } catch (err) {
+    console.error("Stream command sequence failed:", err);
+  }
+});
+
+	
+	function sleep(ms) {
+	  return new Promise(resolve => setTimeout(resolve, ms));
+	}
+function updatePPGChart(ppgValue) {
+  if (ppgChart.data.labels.length > 512) {
+    ppgChart.data.labels.shift();
+    ppgChart.data.datasets[0].data.shift();
+  }
+  ppgChart.data.labels.push('');
+  ppgChart.data.datasets[0].data.push(ppgValue);
+  ppgChart.update();
+}
+function handleNotifications(event) {
+  const value = new Uint8Array(event.target.value.buffer);
+  const newBuffer = new Uint8Array(receiveBuffer.length + value.length);
+  newBuffer.set(receiveBuffer);
+  newBuffer.set(value, receiveBuffer.length);
+  receiveBuffer = newBuffer;
+
+  // Check for ACK
+  if (receiveBuffer.length === 1 && receiveBuffer[0] === 0xFF) {
+    receiveBuffer = new Uint8Array(0);
+    return;
+  }
+
+  let offset = 0;
+  while (receiveBuffer.length - offset >= 6) {
+    if (receiveBuffer[offset] === 0x00) {
+      const packet = receiveBuffer.slice(offset, offset + 6);
+      const view = new DataView(packet.buffer);
+
+      // Extract PPG signal (last 2 bytes)
+      const ppg = view.getInt16(4, true);
+		updatePPGChart(ppg);
+
+		const bpm = detectHeartRate(ppg);
+		if (bpm) {
+		  document.getElementById("statusConsole").textContent = `❤️ BPM: ${bpm}`;
+		}
+
+      offset += 6;
+    } else {
+      offset += 1; // resync
+    }
+  }
+
+  receiveBuffer = receiveBuffer.slice(offset);
+}
+
+    // === Chart.js Setup ===
+    const ctx = document.getElementById('gyroChart').getContext('2d');
+const ppgChart = new Chart(ctx, {
+  type: 'line',
+  data: {
+    labels: [],
+    datasets: [{
+      label: 'PPG Signal',
+      data: [],
+      borderColor: 'cyan',
+      borderWidth: 2,
+      tension: 0.1,
+      pointRadius: 0,
+    }]
+  },
+  options: {
+    animation: false,
+    responsive: true,
+    scales: {
+      x: { display: false },
+      y: {
+        title: { display: true, text: 'PPG' },
+        beginAtZero: false
+      }
+    },
+    plugins: {
+      legend: {
+        labels: { color: 'white' }
+      }
+    }
+  }
+});
+// Show overlay only if not opted out
+window.addEventListener("DOMContentLoaded", () => {
+  if (localStorage.getItem("hidePPGIntroOverlay") !== "true") {
+    document.getElementById("introOverlay").style.display = "flex";
+  } else {
+    document.getElementById("introOverlay").style.display = "none";
+  }
+});
+
+document.getElementById("closeIntroBtn").addEventListener("click", () => {
+  const dontShow = document.getElementById("dontShowAgain").checked;
+  if (dontShow) {
+    localStorage.setItem("hidePPGIntroOverlay", "true");
+  }
+  document.getElementById("introOverlay").style.display = "none";
+});
+function detectHeartRate(ppgValue) {
+  const now = Date.now();
+
+  // Smooth signal with simple moving average over 5 points
+  signalBuffer.push(ppgValue);
+  if (signalBuffer.length > 10) signalBuffer.shift();
+  const smoothed = signalBuffer.reduce((a, b) => a + b, 0) / signalBuffer.length;
+
+  // Peak detection: check if value is a local maximum above dynamic threshold
+  const threshold = 30;
+  if (
+    signalBuffer.length >= 3 &&
+    signalBuffer[signalBuffer.length - 2] > signalBuffer[signalBuffer.length - 3] &&
+    signalBuffer[signalBuffer.length - 2] > smoothed + threshold
+  ) {
+    const timeSinceLastPeak = now - (peakTimestamps[peakTimestamps.length - 1] || 0);
+    if (timeSinceLastPeak > 300) { // debounce (min 200 bpm max)
+      peakTimestamps.push(now);
+      if (peakTimestamps.length > 10) peakTimestamps.shift();
+
+      if (peakTimestamps.length >= 2) {
+        const intervals = peakTimestamps
+          .slice(1)
+          .map((t, i) => t - peakTimestamps[i]);
+        const avgInterval = intervals.reduce((a, b) => a + b, 0) / intervals.length;
+        const bpm = 60000 / avgInterval;
+
+        return Math.round(bpm);
+      }
+    }
+  }
+
+  return null;
+}
+
+  </script>
+</body>
+</html>

@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Breakout Game</title>
+  <style>
+     body {
+  margin: 0;
+  padding: 0;
+  background: #000;
+  color: white;
+  font-family: sans-serif;
+  display: block;        /* allow natural flow */
+  overflow-y: auto;      /* vertical scrolling */
+}
+
+  button {
+    margin: 5px;
+    padding: 10px 16px;
+    font-size: 16px;
+    border-radius: 6px;
+    border: none;
+    cursor: pointer;
+  }
+
+  #scanBtn { background: #2196F3; color: white; }
+  #connectBtn { background: #4CAF50; color: white; }
+  #streamBtn { background: #FFC107; color: black; }
+  #disconnectBtn { background: #f44336; color: white; }
+  #startBtn { background: #9C27B0; color: white; }
+
+  #consoleOutput {
+  background: #000;
+  color: #0f0;
+  padding: 10px;
+  margin: 10px auto;
+  max-width: 480px;
+  font-family: monospace;
+  font-size: 14px;
+  border: 1px solid #0f0;
+  width: 90%;
+
+  /* limit to 3 lines */
+  line-height: 1.4em;
+  max-height: calc(1.4em * 1);
+  overflow-y: auto;
+}
+
+canvas {
+  background: #111;
+  border: 2px solid #fff;
+  width: 100%;
+  max-width: 480px;
+  height: auto;
+  max-height: 540px;
+  display: block;
+  margin: 20px auto;
+  box-sizing: border-box; /* ✅ includes border in width calc */
+}
+
+#controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center; /* center horizontally */
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  text-align: center;
+}
+
+#controls button, #controls p {
+  margin: 5px;
+}
+#banner {
+  width: 100%;
+  max-width: 1000px;
+  margin: 10px auto 0;
+  background-image: url('banner.png');
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: contain;
+  aspect-ratio: 3 / 1;
+}
+#introOverlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0,0,0,0.9);
+  color: #fff;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 9999;
+}
+
+.introContent {
+  max-width: 500px;
+  padding: 20px;
+  background: #111;
+  border: 2px solid #fff;
+  border-radius: 10px;
+  text-align: left;
+  font-size: 16px;
+}
+
+.introContent h2 {
+  margin-top: 0;
+  color: #0f0;
+}
+
+.introContent ul {
+  padding-left: 20px;
+}
+
+.introContent .btnHint {
+  background: #444;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: monospace;
+}
+
+  </style>
+</head>
+<body>
+  <div id="introOverlay">
+  <div class="introContent">
+    <h2>🎮 Welcome to Breakout!</h2>
+    <p>Here's what you need to know to get started:</p>
+    <ul>
+      <li><strong>Connect your Bluetooth device:</strong> Click <span class="btnHint">🔍 Scan</span>, then <span class="btnHint">🔗 Connect</span>.</li>
+      <li><strong>Start data stream:</strong> Tap <span class="btnHint">📡 Start Streaming</span> to enable motion-based control.</li>
+      <li><strong>Tilt to move:</strong> Rotate the device <strong>around the Z-axis</strong> to move the paddle.</li>
+      <li><strong>No Bluetooth?</strong> Use arrow keys or touch to control the paddle.</li>
+      <li><strong>Objective:</strong> Break all the bricks. Don’t let the ball fall!</li>
+      <li><strong>Start game:</strong> Click <span class="btnHint">▶️ Start Game</span>.</li>
+    </ul>
+	    <!-- ✅ Minimum Requirements -->
+    <p><strong>Requirements:</strong></p>
+    <ul>
+      <li><strong>Device:</strong> Shimmer3R</li>
+      <li><strong>Firmware:</strong> Version ≥ <code>v1.0.22</code></li>
+    </ul>
+    <img src="shimmer3_coords.png" alt="Shimmer3 Axis Diagram" style="width: 100%; max-width: 300px; display: block; margin: 10px auto;" />
+    <p style="font-size: 14px; color: #aaa; text-align: center;">
+      ↺ Rotate the device clockwise (right) or counter-clockwise (left) around the <strong>Z-axis</strong> to control the paddle.
+    </p>
+        <div style="margin-top: 10px; display: flex; align-items: center; gap: 10px;">
+      <input type="checkbox" id="dontShowAgain" />
+      <label for="dontShowAgain">Don't show this again</label>
+    </div>
+    <button id="closeIntroBtn">Got it!</button>
+  </div>
+</div>
+
+
+
+  <div id="controls">
+  <button id="scanBtn">🔍 Scan Bluetooth</button>
+  <button id="connectBtn" disabled>🔗 Connect</button>
+  <button id="streamBtn" disabled>📡 Start Streaming</button>
+  <button id="disconnectBtn" disabled>❌ Disconnect</button>
+  <button id="startBtn">▶️ Start Game</button>
+  <p id="deviceName">No device selected</p>
+</div>
+
+<div id="consoleWrapper" ">
+  <pre id="consoleOutput"></pre>
+</div>
+<div id="banner"></div>
+<canvas id="breakout"></canvas>
+
+  <script>
+  let lastPrintedTime = 0;
+let latestGyroSample = null;
+ let selectedDevice = null;
+let server = null;
+let rxCharacteristic = null;
+let txCharacteristic = null;
+let receiveBuffer = new Uint8Array(0);
+const SERVICE_UUID = '65333333-a115-11e2-9e9a-0800200ca100';
+const CHAR_RX_UUID = '65333333-a115-11e2-9e9a-0800200ca102'; // Write to device
+const CHAR_TX_UUID = '65333333-a115-11e2-9e9a-0800200ca101'; // Notifications from device
+// Check if intro overlay should be shown
+window.addEventListener("DOMContentLoaded", () => {
+  if (localStorage.getItem("hideIntroOverlay") === "true") {
+    document.getElementById("introOverlay").style.display = "none";
+  }
+});
+document.getElementById("scanBtn").addEventListener("click", async () => {
+  try {
+    selectedDevice = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [SERVICE_UUID] }]
+    });
+    document.getElementById("deviceName").textContent =
+      `Selected: ${selectedDevice.name || 'Unnamed Device'}`;
+    document.getElementById("connectBtn").disabled = false;
+  } catch (error) {
+    console.error("Scan failed:", error);
+  }
+});
+document.getElementById("disconnectBtn").addEventListener("click", async () => {
+  try {
+    // ✅ Stop notifications if enabled
+    if (txCharacteristic) {
+      await txCharacteristic.stopNotifications();
+      txCharacteristic.removeEventListener('characteristicvaluechanged', handleNotifications);
+    }
+
+    // ✅ Disconnect if connected
+    if (selectedDevice && selectedDevice.gatt && selectedDevice.gatt.connected) {
+      selectedDevice.gatt.disconnect();
+      appendToConsole("🔌 Disconnected from device");
+    } else {
+      appendToConsole("⚠️ No device was connected");
+    }
+  } catch (error) {
+    console.warn("Error during disconnect:", error);
+    appendToConsole("❌ Error during disconnect");
+  }
+
+  // ✅ Reset UI
+  document.getElementById("deviceName").textContent = "No device selected";
+  document.getElementById("connectBtn").disabled = true;
+  document.getElementById("streamBtn").disabled = true;
+  document.getElementById("disconnectBtn").disabled = true;
+
+  // ✅ Clear BLE references
+  selectedDevice = null;
+  server = null;
+  rxCharacteristic = null;
+  txCharacteristic = null;
+
+  // Optional: stop paddle movement
+  leftPressed = false;
+  rightPressed = false;
+});
+document.getElementById("connectBtn").addEventListener("click", async () => {
+  try {
+    server = await selectedDevice.gatt.connect();
+    const service = await server.getPrimaryService(SERVICE_UUID);
+
+    rxCharacteristic = await service.getCharacteristic(CHAR_RX_UUID);
+    txCharacteristic = await service.getCharacteristic(CHAR_TX_UUID);
+
+    await txCharacteristic.startNotifications();
+    txCharacteristic.addEventListener('characteristicvaluechanged', handleNotifications);
+
+    document.getElementById("streamBtn").disabled = false;
+    appendToConsole(`✅ Connected to ${selectedDevice.name || 'device'}`);
+	document.getElementById("disconnectBtn").disabled = false;
+	setInterval(() => {
+	  const now = Date.now();
+	  if (latestGyroSample && now - lastPrintedTime >= 10) {
+		const { gyro_x, gyro_y, gyro_z } = latestGyroSample;
+		appendToConsole(`GYRO ➤ x: ${gyro_x}, y: ${gyro_y}, z: ${gyro_z}`);
+		lastPrintedTime = now;
+
+		// Gyro Z-based paddle control
+		if (gyro_z > 1000) {
+		  rightPressed = true;
+		  leftPressed = false;
+		} else if (gyro_z < -1000) {
+		  leftPressed = true;
+		  rightPressed = false;
+		} else {
+		  leftPressed = false;
+		  rightPressed = false;
+		}
+	  }
+	}, 50); // still run often, throttle output & action
+  } catch (error) {
+    console.error("Connection failed:", error);
+    appendToConsole("❌ Connection failed");
+  }
+});
+
+document.getElementById("streamBtn").addEventListener("click", async () => {
+  if (!rxCharacteristic) {
+    alert("Not connected to device.");
+    return;
+  }
+
+  try {
+    // Step 1: Calculate and send sampling rate command (0x05 XX XX)
+    const rate = 51.2;
+    const samplingValue = Math.floor(32768 / rate);
+    const lowByte = samplingValue & 0xFF;
+    const highByte = (samplingValue >> 8) & 0xFF;
+    const samplingCommand = new Uint8Array([0x05, 0x80, 0x02]);
+    await rxCharacteristic.writeValue(samplingCommand);
+	    // Step 3: Wait 200ms
+    await sleep(200);
+    appendToConsole(`➡️ Sent sampling rate: 0x05 ${lowByte.toString(16)} ${highByte.toString(16)}`);
+
+    // Step 2: Send 0x08 0x00 0x40
+    const configCommand = new Uint8Array([0x08, 0x40, 0x00, 0x00]);
+    await rxCharacteristic.writeValue(configCommand);
+    appendToConsole("➡️ Sent config: 0x08 0x40 0x00 0x00");
+
+    // Step 3: Wait 200ms
+    await sleep(200);
+
+    // Step 4: Send 0x07 to start streaming
+    const streamCommand = new Uint8Array([0x07]);
+    await rxCharacteristic.writeValue(streamCommand);
+    appendToConsole("➡️ Sent start streaming: 0x07");
+  } catch (err) {
+    console.error("Write failed:", err);
+    appendToConsole("❌ Failed to send stream command");
+  }
+});
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function handleNotifications(event) {
+  const value = new Uint8Array(event.target.value.buffer);
+
+  // Append to buffer
+  const newBuffer = new Uint8Array(receiveBuffer.length + value.length);
+  newBuffer.set(receiveBuffer);
+  newBuffer.set(value, receiveBuffer.length);
+  receiveBuffer = newBuffer;
+
+  let offset = 0;
+
+  while (receiveBuffer.length - offset > 0) {
+    const remaining = receiveBuffer.length - offset;
+
+    // ✅ Handle ACK (0xFF) - single byte
+    if (receiveBuffer[offset] === 0xFF && remaining === 1) {
+      appendToConsole("✅ ACK received (0xFF)");
+      offset += 1;
+      break;
+    }
+
+    // ✅ Handle 10-byte data packet (starting with 0x00)
+    if (remaining >= 10 && receiveBuffer[offset] === 0x00) {
+      const packet = receiveBuffer.slice(offset, offset + 10);
+      const view = new DataView(packet.buffer);
+
+      const gyro_x = view.getInt16(4, true);
+      const gyro_y = view.getInt16(6, true);
+      const gyro_z = view.getInt16(8, true);
+
+      latestGyroSample = { gyro_x, gyro_y, gyro_z };
+      offset += 10;
+    } else {
+      // Not a recognized packet start, move one byte forward (resync)
+      offset += 1;
+    }
+  }
+
+  // Keep any leftover unprocessed bytes
+  receiveBuffer = receiveBuffer.slice(offset);
+}
+
+function appendToConsole(text) {
+  const consoleEl = document.getElementById("consoleOutput");
+  consoleEl.textContent += text + "\n";
+  consoleEl.scrollTop = consoleEl.scrollHeight;
+}
+
+  
+    const canvas = document.getElementById("breakout");
+    const ctx = canvas.getContext("2d");
+
+    function resizeCanvas() {
+	  const maxWidth = 480;
+      const maxHeight = 540; // 3/4 of 720
+	  const scale = Math.min(window.innerWidth / maxWidth, window.innerHeight / maxHeight);
+
+	  canvas.width = maxWidth;
+	  canvas.height = maxHeight;
+
+	  canvas.style.width = `${maxWidth * scale}px`;
+	  canvas.style.height = `${maxHeight * scale}px`;
+	}
+    resizeCanvas();
+    window.addEventListener('resize', resizeCanvas);
+
+    const paddleHeight = 10;
+    const paddleWidth = 75;
+    let paddleX = (canvas.width - paddleWidth) / 2;
+
+    const ballRadius = 8;
+    let x = canvas.width / 2;
+    let y = canvas.height - 30;
+    let dx = 2;
+    let dy = -2;
+
+    const brickRowCount = 5;
+    const brickColumnCount = 6;
+    const brickWidth = 60;
+    const brickHeight = 20;
+    const brickPadding = 10;
+    const brickOffsetTop = 30;
+    const brickOffsetLeft = 30;
+
+    let rightPressed = false;
+    let leftPressed = false;
+
+    const bricks = [];
+    for (let c = 0; c < brickColumnCount; c++) {
+      bricks[c] = [];
+      for (let r = 0; r < brickRowCount; r++) {
+        bricks[c][r] = { x: 0, y: 0, status: 1 };
+      }
+    }
+
+    document.addEventListener("keydown", e => {
+      if (e.key === "ArrowRight") rightPressed = true;
+      else if (e.key === "ArrowLeft") leftPressed = true;
+    });
+
+    document.addEventListener("keyup", e => {
+      if (e.key === "ArrowRight") rightPressed = false;
+      else if (e.key === "ArrowLeft") leftPressed = false;
+    });
+
+    canvas.addEventListener("touchstart", e => {
+      const touchX = e.touches[0].clientX;
+      if (touchX < canvas.width / 2) {
+        leftPressed = true;
+        rightPressed = false;
+      } else {
+        rightPressed = true;
+        leftPressed = false;
+      }
+      e.preventDefault();
+    });
+
+    canvas.addEventListener("touchend", () => {
+      leftPressed = false;
+      rightPressed = false;
+    });
+
+    function collisionDetection() {
+      for (let c = 0; c < brickColumnCount; c++) {
+        for (let r = 0; r < brickRowCount; r++) {
+          const b = bricks[c][r];
+          if (b.status === 1) {
+            if (
+              x > b.x &&
+              x < b.x + brickWidth &&
+              y > b.y &&
+              y < b.y + brickHeight
+            ) {
+              dy = -dy;
+              b.status = 0;
+            }
+          }
+        }
+      }
+    }
+
+    function drawBall() {
+      ctx.beginPath();
+      ctx.arc(x, y, ballRadius, 0, Math.PI * 2);
+      ctx.fillStyle = "#f00";
+      ctx.fill();
+      ctx.closePath();
+    }
+
+    function drawPaddle() {
+      ctx.beginPath();
+      ctx.rect(paddleX, canvas.height - paddleHeight, paddleWidth, paddleHeight);
+      ctx.fillStyle = "#00f";
+      ctx.fill();
+      ctx.closePath();
+    }
+
+    function drawBricks() {
+      for (let c = 0; c < brickColumnCount; c++) {
+        for (let r = 0; r < brickRowCount; r++) {
+          if (bricks[c][r].status === 1) {
+            const brickX = c * (brickWidth + brickPadding) + brickOffsetLeft;
+            const brickY = r * (brickHeight + brickPadding) + brickOffsetTop;
+            bricks[c][r].x = brickX;
+            bricks[c][r].y = brickY;
+            ctx.beginPath();
+            ctx.rect(brickX, brickY, brickWidth, brickHeight);
+            ctx.fillStyle = "#0f0";
+            ctx.fill();
+            ctx.closePath();
+          }
+        }
+      }
+    }
+
+	function resetGame() {
+	  x = canvas.width / 2;
+	  y = canvas.height - 30;
+	  dx = 2;
+	  dy = -2;
+	  paddleX = (canvas.width - paddleWidth) / 2;
+	  for (let c = 0; c < brickColumnCount; c++) {
+		for (let r = 0; r < brickRowCount; r++) {
+		  bricks[c][r].status = 1;
+		}
+	  }
+	}
+	let animationId;
+
+	function startGame() {
+	  resetGame();
+	  cancelAnimationFrame(animationId); // stop any previous game loop
+	  animationId = requestAnimationFrame(draw);
+	}
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      drawBricks();
+      drawBall();
+      drawPaddle();
+      collisionDetection();
+
+      if (x + dx > canvas.width - ballRadius || x + dx < ballRadius) dx = -dx;
+      if (y + dy < ballRadius) dy = -dy;
+      else if (y + dy > canvas.height - ballRadius) {
+        if (x > paddleX && x < paddleX + paddleWidth) {
+          dy = -dy;
+        } else {
+          setTimeout(() => {
+			  alert("Game Over! Press Start Game to play again.");
+			}, 10);
+			return;
+        }
+      }
+
+      const moveStep = 3.5; // half of 7
+
+	  if (rightPressed && paddleX < canvas.width - paddleWidth) paddleX += moveStep;
+		else if (leftPressed && paddleX > 0) paddleX -= moveStep;
+
+      x += dx;
+      y += dy;
+      requestAnimationFrame(draw);
+    }
+document.getElementById("startBtn").addEventListener("click", startGame);
+document.getElementById("closeIntroBtn").addEventListener("click", () => {
+  const dontShow = document.getElementById("dontShowAgain").checked;
+  if (dontShow) {
+    localStorage.setItem("hideIntroOverlay", "true");
+  }
+  document.getElementById("introOverlay").style.display = "none";
+});
+ 
+  </script>
+</body>
+</html>
