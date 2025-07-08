@@ -91,14 +91,21 @@ canvas {
   <button id="connectBtn" disabled>🔗 Connect</button>
   <button id="streamBtn" disabled>📡 Start Streaming</button>
   <button id="disconnectBtn" disabled>❌ Disconnect</button>
-  <button id="startBtn">▶️ Start Game</button>
+
   <p id="deviceName">No device selected</p>
+  <div style="text-align:center; margin-top: 10px;">
+  <label for="onThreshSlider">Activation Threshold: <span id="threshLabel">3</span></label><br>
+  <input type="range" id="onThreshSlider" min="1" max="10" step="0.1" value="3" style="width:300px;">
+</div>
 </div>
 
 <div id="consoleWrapper">
   <pre id="consoleOutput"></pre>
 </div>
 <div id="banner"></div>
+<div style="text-align: center; margin-top: 20px;">
+  <button id="startBtn">▶️ Start Game</button>
+</div>
 <canvas id="breakout"></canvas>
 <canvas id="emg1Plot" width="480" height="100" style="background:#111; border:1px solid #0f0; display:block; margin:10px auto;"></canvas>
 <canvas id="emg2Plot" width="480" height="100" style="background:#111; border:1px solid #0f0; display:block; margin:10px auto;"></canvas>
@@ -390,8 +397,19 @@ let smoothIndex = 0;
 
 // Activation state (hysteresis)
 
-const onThresh = 3;
-const offThresh = 2;
+// Initial thresholds
+let onThresh = 3;
+let offThresh = onThresh - 1;
+
+// Slider logic
+const slider = document.getElementById("onThreshSlider");
+const label = document.getElementById("threshLabel");
+
+slider.addEventListener("input", () => {
+  onThresh = parseFloat(slider.value);
+  offThresh = onThresh - 1;
+  label.textContent = onThresh.toFixed(1);
+});
 
 const emg2FIR = new Array(firLen).fill(0);
 let firIndex2 = 0;
@@ -492,12 +510,11 @@ function handleNotifications(event) {
 
 
 
-  emg1Buffer[emgIndex] = rectified;
-  emg2Buffer[emgIndex] = rectified2;
+  emg1Buffer[emgIndex] = smoothed;
+  emg2Buffer[emgIndex] = smoothed2;
   emgIndex = (emgIndex + 1) % emg1Buffer.length;
     // 🔸 Print status to console
   if (++emgPrintCounter >= 256) {
-  appendToConsole(`EMG rectified: ${emgStatus} | EMG1: ${rectified} | EMG2: ${rectified2}`);
   appendToConsole(`EMG smoothed: ${emgStatus} | EMG1: ${smoothed} | EMG2: ${smoothed2}`);
   appendToConsole(`EMG active: ${emgStatus} | EMG1: ${emg1Active} | EMG2: ${emg2Active}`);
   emgPrintCounter = 0;
@@ -569,7 +586,7 @@ function appendToConsole(text) {
     window.addEventListener('resize', resizeCanvas);
 
     const paddleHeight = 10;
-    const paddleWidth = 75;
+    const paddleWidth = 75 * 1.25;
     let paddleX = (canvas.width - paddleWidth) / 2;
 
     const ballRadius = 8;
@@ -642,7 +659,16 @@ function appendToConsole(text) {
         }
       }
     }
-
+	function checkWin() {
+	  for (let c = 0; c < brickColumnCount; c++) {
+		for (let r = 0; r < brickRowCount; r++) {
+		  if (bricks[c][r].status === 1) {
+			return false; // still bricks left
+		  }
+		}
+	  }
+	  return true; // all bricks cleared
+	}
     function drawBall() {
       ctx.beginPath();
       ctx.arc(x, y, ballRadius, 0, Math.PI * 2);
@@ -702,6 +728,13 @@ function appendToConsole(text) {
       drawBall();
       drawPaddle();
       collisionDetection();
+
+	  if (checkWin()) {
+	    setTimeout(() => {
+	    	alert("🎉 You Win! Press Start Game to play again.");
+	    }, 10);
+	    return;
+	  }
 
       if (x + dx > canvas.width - ballRadius || x + dx < ballRadius) dx = -dx;
       if (y + dy < ballRadius) dy = -dy;
