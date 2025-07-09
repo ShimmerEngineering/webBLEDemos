@@ -82,10 +82,83 @@ canvas {
   background-size: contain;
   aspect-ratio: 3 / 1;
 }
-
+#introOverlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.9);
+  color: white;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 9999;
+}
+.introContent {
+  max-width: 550px;
+  padding: 20px;
+  background: #111;
+  border: 2px solid white;
+  border-radius: 12px;
+  overflow-y: auto;
+  max-height: 90vh;
+}
   </style>
 </head>
 <body>
+<div id="introOverlay">
+  <div class="introContent">
+    <h2>🎮 EMG Wrist-Controlled Paddle Game</h2>
+    <p><strong>Requirements:</strong></p>
+    <ul>
+      <li><strong>Device:</strong> Shimmer3R (EMG)</li>
+      <li><strong>Firmware:</strong> Version ≥ <code>v1.0.22</code></li>
+    </ul>
+    
+    <hr>
+
+    <h3>⚡ EMG Electrode Placement</h3>
+    <p>This game uses <strong>wrist extension</strong> and <strong>wrist flexion</strong> to control the paddle. To get good signals, place electrodes on the main belly of each muscle (not over bone or tendon). When using right hand use EMG1 (Ch1N (red)
+and Ch1P (brown) electrodes) for the extensor muscle. The reference electrode (green) should be placed at an electrically
+neutral point of the body, as far away as reasonably possible from the muscle being measured. Bony
+prominences such as the wrist are recommended. </p>
+
+    <h4>✅ FLEXION — Locate Flexor Muscles</h4>
+    <ul>
+      <li>📍 <strong>Target:</strong> Flexor carpi radialis / ulnaris</li>
+      <li>🔘 <strong>Location:</strong> Inner forearm, 2–3 fingers below elbow</li>
+    </ul>
+    <ol>
+      <li>Sit with palm facing up</li>
+      <li>Bend your wrist toward your body</li>
+      <li>Feel for the firm bulge and place electrode there</li>
+    </ol>
+
+    <h4>✅ EXTENSION — Locate Extensor Muscles</h4>
+    <ul>
+      <li>📍 <strong>Target:</strong> Extensor carpi radialis longus</li>
+      <li>🔘 <strong>Location:</strong> Outer top of forearm, near elbow</li>
+    </ul>
+    <ol>
+      <li>Rest forearm palm-down</li>
+      <li>Lift your hand upward (extend wrist)</li>
+      <li>Feel for tightening band and place electrode on belly</li>
+    </ol>
+
+    <p style="font-size: 14px; color: #ccc;">
+      ✅ <strong>Tip:</strong> Let your hand dangle and flex/extend to activate paddle.
+    </p>
+
+    <div style="margin-top: 10px; display: flex; align-items: center; gap: 10px;">
+      <input type="checkbox" id="dontShowAgain" />
+      <label for="dontShowAgain">Don't show this again</label>
+    </div>
+    <button id="closeIntroBtn">Got it!</button>
+  </div>
+</div>
+
+
   <div id="controls">
   <button id="scanBtn">🔍 Scan Bluetooth</button>
   <button id="connectBtn" disabled>🔗 Connect</button>
@@ -129,6 +202,22 @@ const CHAR_RX_UUID = '65333333-a115-11e2-9e9a-0800200ca102'; // Write to device
 const CHAR_TX_UUID = '65333333-a115-11e2-9e9a-0800200ca101'; // Notifications from device
 let emg1Active = false;
 let emg2Active = false;
+
+window.addEventListener("DOMContentLoaded", () => {
+  if (localStorage.getItem("hideIntroOverlay") === "true") {
+    document.getElementById("introOverlay").style.display = "none";
+  }
+});
+
+document.getElementById("closeIntroBtn").addEventListener("click", () => {
+  const dontShow = document.getElementById("dontShowAgain").checked;
+  if (dontShow) {
+    localStorage.setItem("hideIntroOverlay", "true");
+  }
+  document.getElementById("introOverlay").style.display = "none";
+});
+
+
 function blackmanWindow(N) {
   const a0 = 0.42, a1 = 0.5, a2 = 0.08;
   return Array.from({ length: N }, (_, n) =>
