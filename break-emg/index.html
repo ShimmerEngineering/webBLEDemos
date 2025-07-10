@@ -1,0 +1,855 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Breakout Game (EMG)</title>
+  <style>
+     body {
+  margin: 0;
+  padding: 0;
+  background: #000;
+  color: white;
+  font-family: sans-serif;
+  display: block;        /* allow natural flow */
+  overflow-y: auto;      /* vertical scrolling */
+}
+
+  button {
+    margin: 5px;
+    padding: 10px 16px;
+    font-size: 16px;
+    border-radius: 6px;
+    border: none;
+    cursor: pointer;
+  }
+
+  #scanBtn { background: #2196F3; color: white; }
+  #connectBtn { background: #4CAF50; color: white; }
+  #streamBtn { background: #FFC107; color: black; }
+  #disconnectBtn { background: #f44336; color: white; }
+  #startBtn { background: #9C27B0; color: white; }
+
+#consoleOutput {
+  background: #000;
+  color: #0f0;
+  padding: 10px;
+  margin: 10px auto;
+  max-width: 480px;
+  font-family: monospace;
+  font-size: 16px;       /* Increased for better visibility */
+  border: 1px solid #0f0;
+  width: 90%;
+
+  /* updated to allow more lines */
+  line-height: 1.4em;
+  max-height: calc(1.4em * 12);  /* was 1, now shows ~12 lines */
+  overflow-y: auto;
+}
+
+canvas {
+  background: #111;
+  border: 2px solid #fff;
+  width: 100%;
+  max-width: 480px;
+  height: auto;
+  max-height: 540px;
+  display: block;
+  margin: 20px auto;
+  box-sizing: border-box; /* ✅ includes border in width calc */
+}
+
+#controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center; /* center horizontally */
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  text-align: center;
+}
+
+#controls button, #controls p {
+  margin: 5px;
+}
+#banner {
+  width: 100%;
+  max-width: 1000px;
+  margin: 10px auto 0;
+  background-image: url('banner.png');
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: contain;
+  aspect-ratio: 3 / 1;
+}
+#introOverlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.9);
+  color: white;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 9999;
+}
+.introContent {
+  max-width: 550px;
+  padding: 20px;
+  background: #111;
+  border: 2px solid white;
+  border-radius: 12px;
+  overflow-y: auto;
+  max-height: 90vh;
+}
+  </style>
+</head>
+<body>
+<div id="introOverlay">
+  <div class="introContent">
+    <h2>🎮 EMG Wrist-Controlled Paddle Game</h2>
+    <p><strong>Requirements:</strong></p>
+    <ul>
+      <li><strong>Device:</strong> Shimmer3R (EMG)</li>
+      <li><strong>Firmware:</strong> Version ≥ <code>v1.0.22</code></li>
+    </ul>
+    
+    <hr>
+
+    <h3>⚡ EMG Electrode Placement</h3>
+    <p>This game uses <strong>wrist extension</strong> and <strong>wrist flexion</strong> to control the paddle. To get good signals, place electrodes on the main belly of each muscle (not over bone or tendon). When using right hand use EMG1 (Ch1N (red)
+and Ch1P (brown) electrodes) for the extensor muscle. The reference electrode (green) should be placed at an electrically
+neutral point of the body, as far away as reasonably possible from the muscle being measured. Bony
+prominences such as the wrist are recommended. </p>
+
+    <h4>✅ FLEXION — Locate Flexor Muscles</h4>
+    <ul>
+      <li>📍 <strong>Target:</strong> Flexor carpi radialis / ulnaris</li>
+      <li>🔘 <strong>Location:</strong> Inner forearm, 2–3 fingers below elbow</li>
+    </ul>
+    <ol>
+      <li>Sit with palm facing up</li>
+      <li>Bend your wrist toward your body</li>
+      <li>Feel for the firm bulge and place electrode there</li>
+    </ol>
+
+    <h4>✅ EXTENSION — Locate Extensor Muscles</h4>
+    <ul>
+      <li>📍 <strong>Target:</strong> Extensor carpi radialis longus</li>
+      <li>🔘 <strong>Location:</strong> Outer top of forearm, near elbow</li>
+    </ul>
+    <ol>
+      <li>Rest forearm palm-down</li>
+      <li>Lift your hand upward (extend wrist)</li>
+      <li>Feel for tightening band and place electrode on belly</li>
+    </ol>
+
+    <p style="font-size: 14px; color: #ccc;">
+      ✅ <strong>Tip:</strong> Let your hand dangle and flex/extend to activate paddle.
+    </p>
+
+    <div style="margin-top: 10px; display: flex; align-items: center; gap: 10px;">
+      <input type="checkbox" id="dontShowAgain" />
+      <label for="dontShowAgain">Don't show this again</label>
+    </div>
+    <button id="closeIntroBtn">Got it!</button>
+  </div>
+</div>
+
+
+  <div id="controls">
+  <button id="scanBtn">🔍 Scan Bluetooth</button>
+  <button id="connectBtn" disabled>🔗 Connect</button>
+  <button id="streamBtn" disabled>📡 Start Streaming</button>
+  <button id="disconnectBtn" disabled>❌ Disconnect</button>
+
+  <p id="deviceName">No device selected</p>
+  <div style="text-align:center; margin-top: 10px;">
+  <label for="onThreshSlider">Activation Threshold: <span id="threshLabel">3</span></label><br>
+  <input type="range" id="onThreshSlider" min="1" max="10" step="0.1" value="3" style="width:300px;">
+</div>
+</div>
+
+<div id="consoleWrapper">
+  <pre id="consoleOutput"></pre>
+</div>
+<div id="banner"></div>
+<div style="text-align: center; margin-top: 20px;">
+  <button id="startBtn">▶️ Start Game</button>
+</div>
+<canvas id="breakout"></canvas>
+<canvas id="emg1Plot" width="480" height="100" style="background:#111; border:1px solid #0f0; display:block; margin:10px auto;"></canvas>
+<canvas id="emg2Plot" width="480" height="100" style="background:#111; border:1px solid #0f0; display:block; margin:10px auto;"></canvas>
+
+
+  <script>
+  const emg1Buffer = new Array(256*5).fill(0);
+const emg2Buffer = new Array(256*5).fill(0);
+let emgIndex = 0;
+  let lastPrintedTime = 0;
+let latestGyroSample = null;
+let emgPrintCounter = 0;
+ let selectedDevice = null;
+let server = null;
+let rxCharacteristic = null;
+let txCharacteristic = null;
+let plotIntervalId = null;
+let receiveBuffer = new Uint8Array(0);
+const SERVICE_UUID = '65333333-a115-11e2-9e9a-0800200ca100';
+const CHAR_RX_UUID = '65333333-a115-11e2-9e9a-0800200ca102'; // Write to device
+const CHAR_TX_UUID = '65333333-a115-11e2-9e9a-0800200ca101'; // Notifications from device
+let emg1Active = false;
+let emg2Active = false;
+
+window.addEventListener("DOMContentLoaded", () => {
+  if (localStorage.getItem("hideIntroOverlay") === "true") {
+    document.getElementById("introOverlay").style.display = "none";
+  }
+});
+
+document.getElementById("closeIntroBtn").addEventListener("click", () => {
+  const dontShow = document.getElementById("dontShowAgain").checked;
+  if (dontShow) {
+    localStorage.setItem("hideIntroOverlay", "true");
+  }
+  document.getElementById("introOverlay").style.display = "none";
+});
+
+
+function blackmanWindow(N) {
+  const a0 = 0.42, a1 = 0.5, a2 = 0.08;
+  return Array.from({ length: N }, (_, n) =>
+    a0 - a1 * Math.cos((2 * Math.PI * n) / (N - 1)) + a2 * Math.cos((4 * Math.PI * n) / (N - 1))
+  );
+}
+
+function sinc(x) {
+  return x === 0 ? 1 : Math.sin(Math.PI * x) / (Math.PI * x);
+}
+
+function highPassKernel(N, cutoff, sampleRate) {
+  const fc = cutoff / sampleRate;
+  const mid = Math.floor(N / 2);
+  const window = blackmanWindow(N);
+  const kernel = [];
+
+  for (let i = 0; i < N; i++) {
+    const n = i - mid;
+    const lowpass = 2 * fc * sinc(2 * fc * n);
+    const highpass = (n === 0 ? 1 : 0) - lowpass;
+    kernel[i] = highpass * window[i];
+  }
+
+  return kernel;
+}
+
+function applyFIRFilter(signal, kernel) {
+  const N = kernel.length;
+  const output = new Float32Array(signal.length);
+
+  for (let i = 0; i < signal.length; i++) {
+    let acc = 0;
+    for (let j = 0; j < N; j++) {
+      const idx = i - j;
+      if (idx >= 0) acc += signal[idx] * kernel[j];
+    }
+    output[i] = acc;
+  }
+
+  return output;
+}
+
+function movingAverage(signal, windowSize = 5) {
+  let sum = 0;
+  const output = new Float32Array(signal.length);
+
+  for (let i = 0; i < signal.length; i++) {
+    sum += signal[i];
+    if (i >= windowSize) sum -= signal[i - windowSize];
+    output[i] = i >= windowSize ? sum / windowSize : signal[i];
+  }
+
+  return output;
+}
+
+function detectActivation(signal, onThresh = 0.15, offThresh = 0.10) {
+  const output = new Uint8Array(signal.length);
+  let active = false;
+
+  for (let i = 0; i < signal.length; i++) {
+    const val = signal[i];
+
+    if (!active && val >= onThresh) {
+      active = true;
+    } else if (active && val < offThresh) {
+      active = false;
+    }
+
+    output[i] = active ? 1 : 0;
+  }
+
+  return output;
+}
+
+
+document.getElementById("scanBtn").addEventListener("click", async () => {
+  try {
+    selectedDevice = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [SERVICE_UUID] }]
+    });
+    document.getElementById("deviceName").textContent =
+      `Selected: ${selectedDevice.name || 'Unnamed Device'}`;
+    document.getElementById("connectBtn").disabled = false;
+  } catch (error) {
+    console.error("Scan failed:", error);
+  }
+});
+document.getElementById("disconnectBtn").addEventListener("click", async () => {
+  try {
+    // ✅ Stop notifications if enabled
+    if (txCharacteristic) {
+      await txCharacteristic.stopNotifications();
+      txCharacteristic.removeEventListener('characteristicvaluechanged', handleNotifications);
+    }
+
+    // ✅ Disconnect if connected
+    if (selectedDevice && selectedDevice.gatt && selectedDevice.gatt.connected) {
+      selectedDevice.gatt.disconnect();
+      appendToConsole("🔌 Disconnected from device");
+    } else {
+      appendToConsole("⚠️ No device was connected");
+    }
+  } catch (error) {
+    console.warn("Error during disconnect:", error);
+    appendToConsole("❌ Error during disconnect");
+  }
+
+	if (plotIntervalId) {
+	  clearInterval(plotIntervalId);
+	  plotIntervalId = null;
+	}
+
+  // ✅ Reset UI
+  document.getElementById("deviceName").textContent = "No device selected";
+  document.getElementById("connectBtn").disabled = true;
+  document.getElementById("streamBtn").disabled = true;
+  document.getElementById("disconnectBtn").disabled = true;
+
+  // ✅ Clear BLE references
+  selectedDevice = null;
+  server = null;
+  rxCharacteristic = null;
+  txCharacteristic = null;
+
+  // Optional: stop paddle movement
+  leftPressed = false;
+  rightPressed = false;
+});
+document.getElementById("connectBtn").addEventListener("click", async () => {
+  try {
+    server = await selectedDevice.gatt.connect();
+    const service = await server.getPrimaryService(SERVICE_UUID);
+
+    rxCharacteristic = await service.getCharacteristic(CHAR_RX_UUID);
+    txCharacteristic = await service.getCharacteristic(CHAR_TX_UUID);
+
+    await txCharacteristic.startNotifications();
+    txCharacteristic.addEventListener('characteristicvaluechanged', handleNotifications);
+
+    document.getElementById("streamBtn").disabled = false;
+    appendToConsole(`✅ Connected to ${selectedDevice.name || 'device'}`);
+	document.getElementById("disconnectBtn").disabled = false;
+	setInterval(() => {
+	  const now = Date.now();
+	  if ((now - lastPrintedTime) >= 10) {
+		
+		lastPrintedTime = now;
+
+		
+		// --- Optional: use activation to control paddle or action ---
+		// Default to both off
+		rightPressed = false;
+		leftPressed = false;
+
+		// Set based on activation states
+		if (emg1Active && !emg2Active) {
+		  rightPressed = true;
+		} else if (emg2Active && !emg1Active) {
+		  leftPressed = true;
+		} else if (emg1Active && emg2Active) {
+		  // Optional: both active → do nothing, or prioritize
+		  // Example: prioritize EMG1
+		  rightPressed = true;
+		} else {
+		rightPressed = false;
+		leftPressed = false;
+		}
+	  }
+	}, 50); // still run often, throttle output & action
+  } catch (error) {
+    console.error("Connection failed:", error);
+    appendToConsole("❌ Connection failed");
+  }
+});
+
+document.getElementById("streamBtn").addEventListener("click", async () => {
+  if (!rxCharacteristic) {
+    alert("Not connected to device.");
+    return;
+  }
+
+  try {
+  
+    const samplingCommand = new Uint8Array([0x05, 0x80, 0x00]);
+    await rxCharacteristic.writeValue(samplingCommand);
+	    // Step 3: Wait 200ms
+    await sleep(200);
+  
+    const writeSensorCommand = new Uint8Array([0x08, 0x00, 0x00, 0x10]);
+    await rxCharacteristic.writeValue(writeSensorCommand);
+	    // Step 3: Wait 200ms
+    await sleep(200);
+  
+	const writeEXG1Command = new Uint8Array([0x61, 0x00, 0x00, 0x0A, 0x02, 0xA8, 0x10, 0x69, 0x60, 0x20, 0x00, 0x00, 0x02, 0x03]);
+    await rxCharacteristic.writeValue(writeEXG1Command);
+	    // Step 3: Wait 200ms
+    await sleep(200);
+  
+  	const writeEXG2Command = new Uint8Array([0x61, 0x01, 0x00, 0x0A, 0x02, 0xA0, 0x10, 0xE1, 0xE1, 0x00, 0x00, 0x00, 0x02, 0x01]);
+    await rxCharacteristic.writeValue(writeEXG2Command);
+	    // Step 3: Wait 200ms
+    await sleep(200);
+  
+    // Step 4: Send 0x07 to start streaming
+    const streamCommand = new Uint8Array([0x07]);
+    await rxCharacteristic.writeValue(streamCommand);
+    appendToConsole("➡️ Sent start streaming: 0x07");
+	if (!plotIntervalId) {
+  plotIntervalId = setInterval(() => {
+    const latest = emg1Buffer.slice(emgIndex - 10, emgIndex).join(', ');
+	
+	
+
+    drawEMG(document.getElementById("emg1Plot"), emg1Buffer);
+    drawEMG(document.getElementById("emg2Plot"), emg2Buffer);
+  }, 33);
+}
+  } catch (err) {
+    console.error("Write failed:", err);
+    appendToConsole("❌ Failed to send stream command");
+  }
+});
+
+function drawEMG(canvas, buffer) {
+  const ctx = canvas.getContext('2d');
+  const width = canvas.width;
+  const height = canvas.height;
+
+  ctx.clearRect(0, 0, width, height);
+
+  const min = Math.min(...buffer);
+  const max = Math.max(...buffer);
+  const range = max - min || 1; // prevent divide-by-zero
+
+  ctx.beginPath();
+  for (let i = 0; i < buffer.length; i++) {
+    const x = (i / buffer.length) * width;
+    const normalized = (buffer[i] - min) / range; // scale 0 to 1
+    const y = height - normalized * height;
+    ctx.lineTo(x, y);
+  }
+
+  ctx.strokeStyle = '#0f0';
+  ctx.stroke();
+}
+
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Create filter kernel once (e.g., 30 Hz cutoff, 256 Hz sampling rate)
+const hpKernel = highPassKernel(51, 50, 256);
+const hpKernel2 = highPassKernel(51, 50, 256);
+
+// Circular buffer for FIR filtering
+const firLen = hpKernel.length;
+const emg1FIR = new Array(firLen).fill(0);
+let firIndex = 0;
+
+// Moving average smoothing
+const smoothWindow = 5;
+const emg1Smooth = new Array(smoothWindow).fill(0);
+let smoothIndex = 0;
+
+// Activation state (hysteresis)
+
+// Initial thresholds
+let onThresh = 3;
+let offThresh = onThresh - 1;
+
+// Slider logic
+const slider = document.getElementById("onThreshSlider");
+const label = document.getElementById("threshLabel");
+
+slider.addEventListener("input", () => {
+  onThresh = parseFloat(slider.value);
+  offThresh = onThresh - 1;
+  label.textContent = onThresh.toFixed(1);
+});
+
+const emg2FIR = new Array(firLen).fill(0);
+let firIndex2 = 0;
+
+const emg2Smooth = new Array(smoothWindow).fill(0);
+let smoothIndex2 = 0;
+
+// For EMG1
+let ema1 = 0, emv1 = 0;
+const alpha1 = 0.01;
+
+// For EMG2
+let ema2 = 0, emv2 = 0;
+const alpha2 = 0.01;
+
+
+function handleNotifications(event) {
+  const value = new Uint8Array(event.target.value.buffer);
+
+  // Append to buffer
+  const newBuffer = new Uint8Array(receiveBuffer.length + value.length);
+  newBuffer.set(receiveBuffer);
+  newBuffer.set(value, receiveBuffer.length);
+  receiveBuffer = newBuffer;
+
+  let offset = 0;
+
+  while (receiveBuffer.length - offset >= 11) {
+  const packet = receiveBuffer.slice(offset, offset + 11);
+
+  // Confirm packet[0] == 0
+  if (packet[0] !== 0) {
+    console.warn("Invalid packet start byte:", packet[0]);
+    offset += 1; // Try next byte
+    continue;
+  }
+    // 🔸 Extract EMG status (unsigned byte)
+    const emgStatus = packet[4];
+  const emg1 = parseSigned16bit(packet[5], packet[6]);
+  const emg2 = parseSigned16bit(packet[7], packet[8]);
+
+	// --- High-pass filtering (FIR with circular buffer) ---
+	emg1FIR[firIndex] = emg1;
+	let filtered = 0;
+	for (let i = 0; i < hpKernel.length; i++) {
+	  const idx = (firIndex - i + firLen) % firLen;
+	  filtered += emg1FIR[idx] * hpKernel[i];
+	}
+	firIndex = (firIndex + 1) % firLen;
+
+	// --- Rectification ---
+	const rectified = Math.abs(filtered);
+
+	// --- Moving average smoothing ---
+	emg1Smooth[smoothIndex] = rectified;
+	smoothIndex = (smoothIndex + 1) % smoothWindow;
+	const smoothed = emg1Smooth.reduce((a, b) => a + b, 0) / smoothWindow;
+
+
+
+
+	// --- EMG2 filtering ---
+	emg2FIR[firIndex2] = emg2;
+	let filtered2 = 0;
+	for (let i = 0; i < hpKernel2.length; i++) {
+	  const idx = (firIndex2 - i + firLen) % firLen;
+	  filtered2 += emg2FIR[idx] * hpKernel2[i];
+	}
+	firIndex2 = (firIndex2 + 1) % firLen;
+
+	const rectified2 = Math.abs(filtered2);
+	emg2Smooth[smoothIndex2] = rectified2;
+	smoothIndex2 = (smoothIndex2 + 1) % smoothWindow;
+	const smoothed2 = emg2Smooth.reduce((a, b) => a + b, 0) / smoothWindow;
+
+		// --- Hysteresis thresholding ---
+	if (!emg1Active && smoothed >= onThresh) {
+	  emg1Active = true;
+	} else if (emg1Active && smoothed < offThresh) {
+	  emg1Active = false;
+	}
+
+	if (!emg2Active && smoothed2 >= onThresh) {
+	  emg2Active = true;
+	} else if (emg2Active && smoothed2 < offThresh) {
+	  emg2Active = false;
+	}
+
+	if (emg1Active && emg2Active){
+	  if (smoothed>smoothed2)
+	  {
+	    emg2Active=false;
+	  } else {
+	    emg1Active=false;
+	  }
+	}
+
+
+
+
+  emg1Buffer[emgIndex] = smoothed;
+  emg2Buffer[emgIndex] = smoothed2;
+  emgIndex = (emgIndex + 1) % emg1Buffer.length;
+    // 🔸 Print status to console
+  if (++emgPrintCounter >= 256) {
+  appendToConsole(`EMG smoothed: ${emgStatus} | EMG1: ${smoothed} | EMG2: ${smoothed2}`);
+  appendToConsole(`EMG active: ${emgStatus} | EMG1: ${emg1Active} | EMG2: ${emg2Active}`);
+  emgPrintCounter = 0;
+  }
+  offset += 9;
+}
+
+
+  // Retain any leftover bytes
+  receiveBuffer = receiveBuffer.slice(offset);
+}
+
+// Helper function to parse signed 24-bit integer (little-endian)
+function calculateTwosComplement(signedData, bitLength) {
+  if (signedData >= (1 << (bitLength - 1))) {
+    return -((signedData ^ ((1 << bitLength) - 1)) + 1);
+  }
+  return signedData;
+}
+
+function parseSigned16bit(b0, b1) {
+  // Equivalent of:
+  // long xmsb = ((long)(data[iData + 0] & 0xFF) << 16);
+  // long msb  = ((long)(data[iData + 1] & 0xFF) << 8);
+  // long lsb  = ((long)(data[iData + 2] & 0xFF));
+  const xmsb = (b0 & 0xFF) << 8;
+  const lsb  = (b1 & 0xFF);
+  const combined = xmsb + lsb;
+
+  // Equivalent of: formattedData[i] = CalculateTwosComplement((int)combined, 24);
+  return calculateTwosComplement(combined, 24);
+}
+
+function parseSigned24bit(b0, b1, b2) {
+  // Equivalent of:
+  // long xmsb = ((long)(data[iData + 0] & 0xFF) << 16);
+  // long msb  = ((long)(data[iData + 1] & 0xFF) << 8);
+  // long lsb  = ((long)(data[iData + 2] & 0xFF));
+  const xmsb = (b0 & 0xFF) << 16;
+  const msb  = (b1 & 0xFF) << 8;
+  const lsb  = (b2 & 0xFF);
+  const combined = xmsb + msb + lsb;
+
+  // Equivalent of: formattedData[i] = CalculateTwosComplement((int)combined, 24);
+  return calculateTwosComplement(combined, 24);
+}
+function appendToConsole(text) {
+  const consoleEl = document.getElementById("consoleOutput");
+  consoleEl.textContent += text + "\n";
+  consoleEl.scrollTop = consoleEl.scrollHeight;
+}
+
+  
+    const canvas = document.getElementById("breakout");
+    const ctx = canvas.getContext("2d");
+
+    function resizeCanvas() {
+	  const maxWidth = 480;
+      const maxHeight = 540; // 3/4 of 720
+	  const scale = Math.min(window.innerWidth / maxWidth, window.innerHeight / maxHeight);
+
+	  canvas.width = maxWidth;
+	  canvas.height = maxHeight;
+
+	  canvas.style.width = `${maxWidth * scale}px`;
+	  canvas.style.height = `${maxHeight * scale}px`;
+	}
+    resizeCanvas();
+    window.addEventListener('resize', resizeCanvas);
+
+    const paddleHeight = 10;
+    const paddleWidth = 75 * 1.25;
+    let paddleX = (canvas.width - paddleWidth) / 2;
+
+    const ballRadius = 8;
+    let x = canvas.width / 2;
+    let y = canvas.height - 30;
+    let dx = 2;
+    let dy = -2;
+
+    const brickRowCount = 5;
+    const brickColumnCount = 6;
+    const brickWidth = 60;
+    const brickHeight = 20;
+    const brickPadding = 10;
+    const brickOffsetTop = 30;
+    const brickOffsetLeft = 30;
+
+    let rightPressed = false;
+    let leftPressed = false;
+
+    const bricks = [];
+    for (let c = 0; c < brickColumnCount; c++) {
+      bricks[c] = [];
+      for (let r = 0; r < brickRowCount; r++) {
+        bricks[c][r] = { x: 0, y: 0, status: 1 };
+      }
+    }
+
+    document.addEventListener("keydown", e => {
+      if (e.key === "ArrowRight") rightPressed = true;
+      else if (e.key === "ArrowLeft") leftPressed = true;
+    });
+
+    document.addEventListener("keyup", e => {
+      if (e.key === "ArrowRight") rightPressed = false;
+      else if (e.key === "ArrowLeft") leftPressed = false;
+    });
+
+    canvas.addEventListener("touchstart", e => {
+      const touchX = e.touches[0].clientX;
+      if (touchX < canvas.width / 2) {
+        leftPressed = true;
+        rightPressed = false;
+      } else {
+        rightPressed = true;
+        leftPressed = false;
+      }
+      e.preventDefault();
+    });
+
+    canvas.addEventListener("touchend", () => {
+      leftPressed = false;
+      rightPressed = false;
+    });
+
+    function collisionDetection() {
+      for (let c = 0; c < brickColumnCount; c++) {
+        for (let r = 0; r < brickRowCount; r++) {
+          const b = bricks[c][r];
+          if (b.status === 1) {
+            if (
+              x > b.x &&
+              x < b.x + brickWidth &&
+              y > b.y &&
+              y < b.y + brickHeight
+            ) {
+              dy = -dy;
+              b.status = 0;
+            }
+          }
+        }
+      }
+    }
+	function checkWin() {
+	  for (let c = 0; c < brickColumnCount; c++) {
+		for (let r = 0; r < brickRowCount; r++) {
+		  if (bricks[c][r].status === 1) {
+			return false; // still bricks left
+		  }
+		}
+	  }
+	  return true; // all bricks cleared
+	}
+    function drawBall() {
+      ctx.beginPath();
+      ctx.arc(x, y, ballRadius, 0, Math.PI * 2);
+      ctx.fillStyle = "#f00";
+      ctx.fill();
+      ctx.closePath();
+    }
+
+    function drawPaddle() {
+      ctx.beginPath();
+      ctx.rect(paddleX, canvas.height - paddleHeight, paddleWidth, paddleHeight);
+      ctx.fillStyle = "#00f";
+      ctx.fill();
+      ctx.closePath();
+    }
+
+    function drawBricks() {
+      for (let c = 0; c < brickColumnCount; c++) {
+        for (let r = 0; r < brickRowCount; r++) {
+          if (bricks[c][r].status === 1) {
+            const brickX = c * (brickWidth + brickPadding) + brickOffsetLeft;
+            const brickY = r * (brickHeight + brickPadding) + brickOffsetTop;
+            bricks[c][r].x = brickX;
+            bricks[c][r].y = brickY;
+            ctx.beginPath();
+            ctx.rect(brickX, brickY, brickWidth, brickHeight);
+            ctx.fillStyle = "#0f0";
+            ctx.fill();
+            ctx.closePath();
+          }
+        }
+      }
+    }
+
+	function resetGame() {
+	  x = canvas.width / 2;
+	  y = canvas.height - 30;
+	  dx = 2;
+	  dy = -2;
+	  paddleX = (canvas.width - paddleWidth) / 2;
+	  for (let c = 0; c < brickColumnCount; c++) {
+		for (let r = 0; r < brickRowCount; r++) {
+		  bricks[c][r].status = 1;
+		}
+	  }
+	}
+	let animationId;
+
+	function startGame() {
+	  resetGame();
+	  cancelAnimationFrame(animationId); // stop any previous game loop
+	  animationId = requestAnimationFrame(draw);
+	}
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      drawBricks();
+      drawBall();
+      drawPaddle();
+      collisionDetection();
+
+	  if (checkWin()) {
+	    setTimeout(() => {
+	    	alert("🎉 You Win! Press Start Game to play again.");
+	    }, 10);
+	    return;
+	  }
+
+      if (x + dx > canvas.width - ballRadius || x + dx < ballRadius) dx = -dx;
+      if (y + dy < ballRadius) dy = -dy;
+      else if (y + dy > canvas.height - ballRadius) {
+        if (x > paddleX && x < paddleX + paddleWidth) {
+          dy = -dy;
+        } else {
+          setTimeout(() => {
+			  alert("Game Over! Press Start Game to play again.");
+			}, 10);
+			return;
+        }
+      }
+
+      const moveStep = 3.5; // half of 7
+
+	  if (rightPressed && paddleX < canvas.width - paddleWidth) paddleX += moveStep;
+		else if (leftPressed && paddleX > 0) paddleX -= moveStep;
+
+      x += dx;
+      y += dy;
+      requestAnimationFrame(draw);
+    }
+document.getElementById("startBtn").addEventListener("click", startGame);
+ 
+ 
+  </script>
+</body>
+</html>
