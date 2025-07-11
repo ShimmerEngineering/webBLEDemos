@@ -119,11 +119,12 @@ canvas {
     <hr>
 
     <h3>⚡ EMG Electrode Placement</h3>
-    <p>This game uses <strong>wrist extension</strong> and <strong>wrist flexion</strong> to control the paddle. To get good signals, place electrodes on the main belly of each muscle (not over bone or tendon). When using right hand use EMG1 (Ch1N (red)
-and Ch1P (brown) electrodes) for the extensor muscle. The reference electrode (green) should be placed at an electrically
+    <p>This game uses <strong>wrist extension</strong> and <strong>wrist flexion</strong> to control the paddle. To get good signals, place electrodes on the main belly of each muscle (not over bone or tendon). 
+	When using the right hand, use EMG1 (Ch1N (red) and Ch1P (brown) electrodes) for the extensor muscle.
+Note: The red and brown electrodes are interchangeable because the EMG signal is rectified (absolute value is used), so polarity does not affect gameplay, this is the same for EMG2. The reference electrode (green) should be placed at an electrically
 neutral point of the body, as far away as reasonably possible from the muscle being measured. Bony
 prominences such as the wrist are recommended. </p>
-
+<a href="example.png" target="_blank" style="color: #0af; text-decoration: underline;">Example</a>
     <h4>✅ FLEXION — Locate Flexor Muscles</h4>
     <ul>
       <li>📍 <strong>Target:</strong> Flexor carpi radialis / ulnaris</li>
@@ -168,7 +169,11 @@ prominences such as the wrist are recommended. </p>
   <p id="deviceName">No device selected</p>
   <div style="text-align:center; margin-top: 10px;">
   <label for="onThreshSlider">Activation Threshold: <span id="threshLabel">3</span></label><br>
-  <input type="range" id="onThreshSlider" min="1" max="10" step="0.1" value="3" style="width:300px;">
+  <input type="range" id="onThreshSlider" min="1" max="20" step="0.1" value="3" style="width:300px;">
+</div>
+<div style="text-align:center; margin-top: 10px;">
+  <label for="ballSpeedSlider">Ball Speed: <span id="ballSpeedLabel">175</span></label><br>
+  <input type="range" id="ballSpeedSlider" min="50" max="350" step="5" value="175" style="width:300px;">
 </div>
 </div>
 
@@ -202,6 +207,10 @@ const CHAR_RX_UUID = '65333333-a115-11e2-9e9a-0800200ca102'; // Write to device
 const CHAR_TX_UUID = '65333333-a115-11e2-9e9a-0800200ca101'; // Notifications from device
 let emg1Active = false;
 let emg2Active = false;
+let lastTime = null;
+let gameOver = false;
+let gameWon = false;
+
 
 window.addEventListener("DOMContentLoaded", () => {
   if (localStorage.getItem("hideIntroOverlay") === "true") {
@@ -500,6 +509,22 @@ slider.addEventListener("input", () => {
   label.textContent = onThresh.toFixed(1);
 });
 
+const ballSpeedSlider = document.getElementById("ballSpeedSlider");
+const ballSpeedLabel = document.getElementById("ballSpeedLabel");
+
+ballSpeedSlider.addEventListener("input", () => {
+  ballSpeed = parseInt(ballSpeedSlider.value);
+  ballSpeedLabel.textContent = ballSpeed;
+
+  // Update ball direction without resetting game
+  const angle = Math.atan2(speedY, speedX);
+  speedX = ballSpeed * Math.cos(angle);
+  speedY = ballSpeed * Math.sin(angle);
+});
+
+
+
+
 const emg2FIR = new Array(firLen).fill(0);
 let firIndex2 = 0;
 
@@ -681,8 +706,10 @@ function appendToConsole(text) {
     const ballRadius = 8;
     let x = canvas.width / 2;
     let y = canvas.height - 30;
-    let dx = 2;
-    let dy = -2;
+	let ballSpeed = 175;
+	let speedX = ballSpeed;
+	let speedY = -ballSpeed;
+	let animationId = null;
 
     const brickRowCount = 5;
     const brickColumnCount = 6;
@@ -731,23 +758,24 @@ function appendToConsole(text) {
     });
 
     function collisionDetection() {
-      for (let c = 0; c < brickColumnCount; c++) {
-        for (let r = 0; r < brickRowCount; r++) {
-          const b = bricks[c][r];
-          if (b.status === 1) {
-            if (
-              x > b.x &&
-              x < b.x + brickWidth &&
-              y > b.y &&
-              y < b.y + brickHeight
-            ) {
-              dy = -dy;
-              b.status = 0;
-            }
-          }
+  for (let c = 0; c < brickColumnCount; c++) {
+    for (let r = 0; r < brickRowCount; r++) {
+      const b = bricks[c][r];
+      if (b.status === 1) {
+        if (
+          x > b.x &&
+          x < b.x + brickWidth &&
+          y > b.y &&
+          y < b.y + brickHeight
+        ) {
+          speedY = -speedY; // ✅ updated
+          b.status = 0;
         }
       }
     }
+  }
+}
+
 	function checkWin() {
 	  for (let c = 0; c < brickColumnCount; c++) {
 		for (let r = 0; r < brickRowCount; r++) {
@@ -792,61 +820,78 @@ function appendToConsole(text) {
       }
     }
 
-	function resetGame() {
+	function startGame() {
 	  x = canvas.width / 2;
 	  y = canvas.height - 30;
-	  dx = 2;
-	  dy = -2;
 	  paddleX = (canvas.width - paddleWidth) / 2;
+	  lastTime = null;
+	  speedX = ballSpeed;
+	  speedY = -ballSpeed;
+	  cancelAnimationFrame(animationId); // stop previous loop if running
+	  animationId = requestAnimationFrame(draw); // start game loop
+
+	  gameOver = false;
+	  gameWon = false;
+
+	  // Reset all bricks
 	  for (let c = 0; c < brickColumnCount; c++) {
 		for (let r = 0; r < brickRowCount; r++) {
 		  bricks[c][r].status = 1;
 		}
 	  }
 	}
-	let animationId;
 
-	function startGame() {
-	  resetGame();
-	  cancelAnimationFrame(animationId); // stop any previous game loop
-	  animationId = requestAnimationFrame(draw);
+
+	
+    function draw(timestamp) {
+  if (!lastTime) lastTime = timestamp;
+  const dt = (timestamp - lastTime) / 1000; // delta time in seconds
+  lastTime = timestamp;
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  drawBricks();
+  drawBall();
+  drawPaddle();
+  collisionDetection();
+
+	if (!gameWon && checkWin()) {
+	  gameWon = true;
+	  alert("🎉 You Win! You can still move the paddle. Press Start Game to restart.");
 	}
-    function draw() {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      drawBricks();
-      drawBall();
-      drawPaddle();
-      collisionDetection();
 
-	  if (checkWin()) {
-	    setTimeout(() => {
-	    	alert("🎉 You Win! Press Start Game to play again.");
-	    }, 10);
-	    return;
-	  }
+  // ❗️Fix collision logic (no more dx/dy!)
+  if (x + speedX * dt > canvas.width - ballRadius || x + speedX * dt < ballRadius) {
+    speedX = -speedX;
+  }
 
-      if (x + dx > canvas.width - ballRadius || x + dx < ballRadius) dx = -dx;
-      if (y + dy < ballRadius) dy = -dy;
-      else if (y + dy > canvas.height - ballRadius) {
-        if (x > paddleX && x < paddleX + paddleWidth) {
-          dy = -dy;
-        } else {
-          setTimeout(() => {
-			  alert("Game Over! Press Start Game to play again.");
-			}, 10);
-			return;
-        }
-      }
+  if (y + speedY * dt < ballRadius) {
+    speedY = -speedY;
+  } else if (y + speedY * dt > canvas.height - ballRadius) {
+    if (x > paddleX && x < paddleX + paddleWidth) {
+      speedY = -speedY;
+    } else if (!gameOver) {
+	  gameOver = true;
+	  alert("Game Over! You can still move the paddle. Press Start Game to restart.");
+	}
+  }
 
-      const moveStep = 3.5; // half of 7
+  // ✅ Delta-time-aware paddle movement
+  const moveSpeed = 350; // pixels per second
+  if (rightPressed && paddleX < canvas.width - paddleWidth) {
+    paddleX += moveSpeed * dt;
+  } else if (leftPressed && paddleX > 0) {
+    paddleX -= moveSpeed * dt;
+  }
 
-	  if (rightPressed && paddleX < canvas.width - paddleWidth) paddleX += moveStep;
-		else if (leftPressed && paddleX > 0) paddleX -= moveStep;
+  // ✅ Move ball using delta time
+	if (!gameOver && !gameWon) {
+	  x += speedX * dt;
+	  y += speedY * dt;
+	}
 
-      x += dx;
-      y += dy;
-      requestAnimationFrame(draw);
-    }
+  animationId = requestAnimationFrame(draw);
+}
+
 document.getElementById("startBtn").addEventListener("click", startGame);
  
  
