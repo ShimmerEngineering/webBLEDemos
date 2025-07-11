@@ -170,6 +170,10 @@ prominences such as the wrist are recommended. </p>
   <label for="onThreshSlider">Activation Threshold: <span id="threshLabel">3</span></label><br>
   <input type="range" id="onThreshSlider" min="1" max="20" step="0.1" value="3" style="width:300px;">
 </div>
+<div style="text-align:center; margin-top: 10px;">
+  <label for="ballSpeedSlider">Ball Speed: <span id="ballSpeedLabel">175</span></label><br>
+  <input type="range" id="ballSpeedSlider" min="50" max="350" step="5" value="175" style="width:300px;">
+</div>
 </div>
 
 <div id="consoleWrapper">
@@ -504,6 +508,22 @@ slider.addEventListener("input", () => {
   label.textContent = onThresh.toFixed(1);
 });
 
+const ballSpeedSlider = document.getElementById("ballSpeedSlider");
+const ballSpeedLabel = document.getElementById("ballSpeedLabel");
+
+ballSpeedSlider.addEventListener("input", () => {
+  ballSpeed = parseInt(ballSpeedSlider.value);
+  ballSpeedLabel.textContent = ballSpeed;
+
+  // Update ball direction without resetting game
+  const angle = Math.atan2(speedY, speedX);
+  speedX = ballSpeed * Math.cos(angle);
+  speedY = ballSpeed * Math.sin(angle);
+});
+
+
+
+
 const emg2FIR = new Array(firLen).fill(0);
 let firIndex2 = 0;
 
@@ -685,10 +705,10 @@ function appendToConsole(text) {
     const ballRadius = 8;
     let x = canvas.width / 2;
     let y = canvas.height - 30;
-	const ballSpeed = 175;
+	let ballSpeed = 175;
 	let speedX = ballSpeed;
 	let speedY = -ballSpeed;
-let animationId = null;
+	let animationId = null;
 
     const brickRowCount = 5;
     const brickColumnCount = 6;
