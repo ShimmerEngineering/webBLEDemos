@@ -165,7 +165,7 @@ prominences such as the wrist are recommended. </p>
   <button id="connectBtn" disabled>🔗 Connect</button>
   <button id="streamBtn" disabled>📡 Start Streaming</button>
   <button id="disconnectBtn" disabled>❌ Disconnect</button>
-
+  <button id="showTipBtn">💡 Show Tip</button>
   <p id="deviceName">No device selected</p>
   <div style="text-align:center; margin-top: 10px;">
   <label for="onThreshSlider">Activation Threshold: <span id="threshLabel">3</span></label><br>
@@ -550,9 +550,10 @@ function handleNotifications(event) {
   receiveBuffer = newBuffer;
 
   let offset = 0;
-
-  while (receiveBuffer.length - offset >= 11) {
-  const packet = receiveBuffer.slice(offset, offset + 11);
+	
+  let packetSize = 9; //1+3+1+2+2	
+  while (receiveBuffer.length - offset >= packetSize) {
+  const packet = receiveBuffer.slice(offset, offset + packetSize);
 
   // Confirm packet[0] == 0
   if (packet[0] !== 0) {
@@ -633,7 +634,7 @@ function handleNotifications(event) {
   appendToConsole(`EMG active: ${emgStatus} | EMG1: ${emg1Active} | EMG2: ${emg2Active}`);
   emgPrintCounter = 0;
   }
-  offset += 9;
+  offset += packetSize;
 }
 
 
@@ -659,7 +660,7 @@ function parseSigned16bit(b0, b1) {
   const combined = xmsb + lsb;
 
   // Equivalent of: formattedData[i] = CalculateTwosComplement((int)combined, 24);
-  return calculateTwosComplement(combined, 24);
+  return calculateTwosComplement(combined, 16);
 }
 
 function parseSigned24bit(b0, b1, b2) {
@@ -893,7 +894,11 @@ function appendToConsole(text) {
 }
 
 document.getElementById("startBtn").addEventListener("click", startGame);
- 
+ document.getElementById("showTipBtn").addEventListener("click", () => {
+  document.getElementById("introOverlay").style.display = "flex";
+  localStorage.removeItem("hideIntroOverlay");
+});
+
  
   </script>
 </body>

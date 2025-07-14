@@ -173,6 +173,7 @@ canvas {
   <button id="streamBtn" disabled>📡 Start Streaming</button>
   <button id="disconnectBtn" disabled>❌ Disconnect</button>
   <button id="startBtn">▶️ Start Game</button>
+    <button id="showTipBtn">💡 Show Tip</button>
   <p id="deviceName">No device selected</p>
 </div>
 
@@ -558,7 +559,11 @@ document.getElementById("closeIntroBtn").addEventListener("click", () => {
   }
   document.getElementById("introOverlay").style.display = "none";
 });
- 
+ document.getElementById("showTipBtn").addEventListener("click", () => {
+  document.getElementById("introOverlay").style.display = "flex";
+  localStorage.removeItem("hideIntroOverlay");
+});
+
   </script>
 </body>
 </html>
