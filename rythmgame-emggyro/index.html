@@ -416,7 +416,7 @@ document.getElementById("streamBtn").addEventListener("click", async () => {
 	    // Step 3: Wait 200ms
     await sleep(200);
 
-    const writeRangeCommand = new Uint8Array([0x49, 0x02]); //set gyro range
+    const writeRangeCommand = new Uint8Array([0x49, 0x01]); //set gyro range
     await rxCharacteristic.writeValue(writeRangeCommand);
 	    // Step 3: Wait 200ms
     await sleep(200);
@@ -754,7 +754,7 @@ function gameLoop(timestamp) {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   if (timestamp >= nextNoteTime) {
     spawnNote();
-    const delay = [1000, 2000][Math.floor(Math.random() * 2)];
+    const delay = [2000, 4000][Math.floor(Math.random() * 2)];
     nextNoteTime = timestamp + delay;
   }
   updateNotes();
