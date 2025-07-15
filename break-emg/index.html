@@ -184,6 +184,10 @@ prominences such as the wrist are recommended. </p>
 <div style="text-align: center; margin-top: 20px;">
   <button id="startBtn">▶️ Start Game</button>
 </div>
+<div style="text-align: center; margin-top: 10px;">
+  <input type="checkbox" id="autoRestart" />
+  <label for="autoRestart">Auto-restart after Game Over (5s)</label>
+</div>
 <canvas id="breakout"></canvas>
 <canvas id="emg1Plot" width="480" height="100" style="background:#111; border:1px solid #0f0; display:block; margin:10px auto;"></canvas>
 <canvas id="emg2Plot" width="480" height="100" style="background:#111; border:1px solid #0f0; display:block; margin:10px auto;"></canvas>
@@ -871,7 +875,16 @@ function appendToConsole(text) {
       speedY = -speedY;
     } else if (!gameOver) {
 	  gameOver = true;
-	  alert("Game Over! You can still move the paddle. Press Start Game to restart.");
+	  
+		if (document.getElementById("autoRestart").checked) {
+		showCustomAlert("Game Over! Game will restart in 5 seconds", 4500);
+		  setTimeout(() => {
+			if (!gameOver && !gameWon) return;
+			startGame();
+		  }, 5000);
+		} else {
+		showCustomAlert("Game Over! You can still move the paddle. Press Start Game to restart.", 5000);
+		}
 	}
   }
 
@@ -893,8 +906,33 @@ function appendToConsole(text) {
 }
 
 document.getElementById("startBtn").addEventListener("click", startGame);
- 
+ function showCustomAlert(message, duration = 3000) {
+  const el = document.getElementById("customAlert");
+  el.textContent = message;
+  el.style.display = "block";
+
+  setTimeout(() => {
+    el.style.display = "none";
+  }, duration);
+}
  
   </script>
+  <div id="customAlert" style="
+  display: none;
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #222;
+  color: #fff;
+  padding: 16px 24px;
+  border: 2px solid #f00;
+  border-radius: 10px;
+  font-size: 16px;
+  z-index: 9999;
+  text-align: center;
+">
+  Game Over! You can still move the paddle. Press Start Game to restart.
+</div>
 </body>
 </html>
