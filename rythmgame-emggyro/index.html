@@ -197,9 +197,15 @@ let rxCharacteristic = null;
 let txCharacteristic = null;
 let plotIntervalId = null;
 let receiveBuffer = new Uint8Array(0);
-const SERVICE_UUID = '65333333-a115-11e2-9e9a-0800200ca100';
-const CHAR_RX_UUID = '65333333-a115-11e2-9e9a-0800200ca102'; // Write to device
-const CHAR_TX_UUID = '65333333-a115-11e2-9e9a-0800200ca101'; // Notifications from device
+let SERVICE_UUID = '65333333-a115-11e2-9e9a-0800200ca100';
+let CHAR_RX_UUID = '65333333-a115-11e2-9e9a-0800200ca102'; // Write to device
+let CHAR_TX_UUID = '65333333-a115-11e2-9e9a-0800200ca101'; // Notifications from device
+const SERVICE_UUID_3R = '65333333-a115-11e2-9e9a-0800200ca100';
+const CHAR_RX_UUID_3R = '65333333-a115-11e2-9e9a-0800200ca102'; // Write to device
+const CHAR_TX_UUID_3R = '65333333-a115-11e2-9e9a-0800200ca101'; // Notifications from device
+const SERVICE_UUID_3 = '49535343-fe7d-4ae5-8fa9-9fafd205e455';
+const CHAR_RX_UUID_3 = '49535343-1e4d-4bd9-ba61-23c647249616'; // Write to device
+const CHAR_TX_UUID_3 = '49535343-8841-43f4-a8d4-ecbe34729bb3'; // Notifications from device
 let emg1Active = false;
 let emg2Active = false;
 let lastTime = null;
@@ -301,15 +307,33 @@ function detectActivation(signal, onThresh = 0.15, offThresh = 0.10) {
 document.getElementById("scanBtn").addEventListener("click", async () => {
   try {
     selectedDevice = await navigator.bluetooth.requestDevice({
-      filters: [{ services: [SERVICE_UUID] }]
+      filters: [{ services: [SERVICE_UUID_3R] }]
     });
-    document.getElementById("deviceName").textContent =
-      `Selected: ${selectedDevice.name || 'Unnamed Device'}`;
-    document.getElementById("connectBtn").disabled = false;
+
+    // Check if the device name contains "Shimmer3R" or "Shimmer3"
+    if (selectedDevice.name && (selectedDevice.name.includes("Shimmer3R") || selectedDevice.name.includes("Shimmer3"))) {
+      document.getElementById("deviceName").textContent =
+        `Selected: ${selectedDevice.name || 'Unnamed Device'}`;
+      document.getElementById("connectBtn").disabled = false;
+	  
+	  if (selectedDevice.name.includes("Shimmer3R")){
+		SERVICE_UUID = SERVICE_UUID_3R;
+		CHAR_RX_UUID = CHAR_RX_UUID_3R;
+		CHAR_TX_UUID = CHAR_TX_UUID_3R;
+	  } else {
+		SERVICE_UUID = SERVICE_UUID_3;
+		CHAR_RX_UUID = CHAR_RX_UUID_3;
+		CHAR_TX_UUID = CHAR_TX_UUID_3;
+	  }
+	  
+    } else {
+      alert("Please select a device named Shimmer3R or Shimmer3.");
+    }
   } catch (error) {
     console.error("Scan failed:", error);
   }
 });
+
 document.getElementById("disconnectBtn").addEventListener("click", async () => {
   try {
     // ✅ Stop notifications if enabled
@@ -457,10 +481,17 @@ function drawEMG(canvas, buffer) {
   const height = canvas.height;
 
   ctx.clearRect(0, 0, width, height);
-
+/*
   const min = Math.min(...buffer);
   const max = Math.max(...buffer);
   const range = max - min || 1; // prevent divide-by-zero
+  */
+  // 🔒 Fixed y-axis scale range
+  const min = 0;
+  const max = 100;
+  const range = max - min;
+
+
 
   ctx.beginPath();
   for (let i = 0; i < buffer.length; i++) {
@@ -495,7 +526,17 @@ function drawGyro(canvas, buffer) {
 
   ctx.strokeStyle = '#f0f'; // optional: change color for gyro
   ctx.stroke();
+
+  // Draw the 0 value line (in the middle of the canvas)
+  const zeroLineY = height / 2;
+  ctx.beginPath();
+  ctx.moveTo(0, zeroLineY);
+  ctx.lineTo(width, zeroLineY);
+  ctx.strokeStyle = '#fff'; // white line for 0 value
+  ctx.lineWidth = 1; // thinner line
+  ctx.stroke();
 }
+
 
 
 function sleep(ms) {
@@ -742,7 +783,6 @@ function checkTrigger() {
     }
   }
   // No hit → penalize
-  score = Math.max(0, score - 1);
   return false;
 }
 function drawScore() {
