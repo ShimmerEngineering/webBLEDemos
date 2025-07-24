@@ -158,7 +158,7 @@ prominences such as the wrist are recommended. </p>
     </ol>
 
     <p style="font-size: 14px; color: #ccc;">
-      ✅ <strong>Tip:</strong> Let your hand dangle and flex/extend to activate paddle.
+      ✅ <strong>Tip:</strong> Let your hand dangle and flex/extend to activate paddle. You can adjust the activation threshold using the slider — increasing it makes detection <em>less sensitive</em>, while lowering it makes it <em>more sensitive
     </p>
 
     <div style="margin-top: 10px; display: flex; align-items: center; gap: 10px;">
@@ -199,8 +199,11 @@ prominences such as the wrist are recommended. </p>
   <label for="autoRestart">Auto-restart after Game Over (5s)</label>
 </div>
 <canvas id="breakout"></canvas>
-<canvas id="emg1Plot" width="480" height="100" style="background:#111; border:1px solid #0f0; display:block; margin:10px auto;"></canvas>
-<canvas id="emg2Plot" width="480" height="100" style="background:#111; border:1px solid #0f0; display:block; margin:10px auto;"></canvas>
+<div style="text-align: center; color: #0f0; font-family: monospace; font-size: 16px;">📈 EMG Signal 1 (brown - red)</div>
+<canvas id="emg1Plot" width="480" height="100" style="background:#111; border:1px solid #0f0; display:block; margin:5px auto 20px;"></canvas>
+
+<div style="text-align: center; color: #f0f; font-family: monospace; font-size: 16px;">📈 EMG Signal 2 (black - white)</div>
+<canvas id="emg2Plot" width="480" height="100" style="background:#111; border:1px solid #0f0; display:block; margin:5px auto 20px;"></canvas>
 
 
   <script>
