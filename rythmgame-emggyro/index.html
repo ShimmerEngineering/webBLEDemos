@@ -1,9 +1,18 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-T26GWN0LJW"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'G-T26GWN0LJW');
+</script>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Breakout Game (EMG)</title>
+  <title>Rhythm Game (EMG + Gyro)</title>
   <style>
      body {
   margin: 0;
@@ -108,47 +117,40 @@ canvas {
 <body>
 <div id="introOverlay">
   <div class="introContent">
-    <h2>🎮 EMG Wrist-Controlled Paddle Game</h2>
-    <p><strong>Requirements:</strong></p>
-    <ul>
-      <li><strong>Device:</strong> Shimmer3R (EMG)</li>
-      <li><strong>Firmware:</strong> Version ≥ <code>v1.0.22</code></li>
-    </ul>
-    
+    <h2>🥁 EMG Rhythm Game with Motion Monitoring</h2>
+    <p><strong>Welcome!</strong> This is a rhythm-based game where you tap notes using your muscle activity — powered by <strong>EMG (Electromyography)</strong> from your <strong>biceps</strong>. Simultaneously, <strong>gyroscope data</strong> is visualized to monitor wrist or elbow movement range, useful for tracking motor control or rehab progress.</p>
+
     <hr>
 
-    <h3>⚡ EMG Electrode Placement</h3>
-    <p>This game uses <strong>wrist extension</strong> and <strong>wrist flexion</strong> to control the paddle. To get good signals, place electrodes on the main belly of each muscle (not over bone or tendon). 
-	When using the right hand, use EMG1 (Ch1N (red) and Ch1P (brown) electrodes) for the extensor muscle.
-Note: The red and brown electrodes are interchangeable because the EMG signal is rectified (absolute value is used), so polarity does not affect gameplay, this is the same for EMG2. The reference electrode (green) should be placed at an electrically
-neutral point of the body, as far away as reasonably possible from the muscle being measured. Bony
-prominences such as the wrist are recommended. </p>
-<a href="example.png" target="_blank" style="color: #0af; text-decoration: underline;">Example</a>
-    <h4>✅ FLEXION — Locate Flexor Muscles</h4>
+    <h3>⚡ Signal Setup</h3>
+    <p>This game uses:</p>
     <ul>
-      <li>📍 <strong>Target:</strong> Flexor carpi radialis / ulnaris</li>
-      <li>🔘 <strong>Location:</strong> Inner forearm, 2–3 fingers below elbow</li>
+      <li>🎯 <strong>EMG</strong> (Biceps) to trigger note hits based on muscle activation</li>
+      <li>📈 <strong>Gyroscope</strong> to monitor range of motion during play</li>
+    </ul>
+
+    <p><strong>Device required:</strong> Shimmer3R (EMG + Gyro)<br>
+    <strong>Firmware:</strong> v1.0.22 or later</p>
+
+    <hr>
+
+    <h3>💪 EMG Electrode Placement — Biceps</h3>
+    <ul>
+      <li>📍 <strong>Target:</strong> Biceps brachii (main upper arm muscle)</li>
+      <li>🔘 <strong>Where:</strong> Midpoint between shoulder and elbow crease, on the front of upper arm</li>
     </ul>
     <ol>
-      <li>Sit with palm facing up</li>
-      <li>Bend your wrist toward your body</li>
-      <li>Feel for the firm bulge and place electrode there</li>
+      <li>Flex your elbow to locate the bulging bicep</li>
+      <li>Place the two EMG electrodes (brown and red) along the muscle belly, aligned with the arm. Note: The brown and red electrodes are interchangeable because the EMG signal is rectified (absolute value is used)</li>
+      <li>Place the green reference electrode on a neutral bony area (e.g. wrist, elbow, or shoulder)</li>
     </ol>
 
-    <h4>✅ EXTENSION — Locate Extensor Muscles</h4>
-    <ul>
-      <li>📍 <strong>Target:</strong> Extensor carpi radialis longus</li>
-      <li>🔘 <strong>Location:</strong> Outer top of forearm, near elbow</li>
-    </ul>
-    <ol>
-      <li>Rest forearm palm-down</li>
-      <li>Lift your hand upward (extend wrist)</li>
-      <li>Feel for tightening band and place electrode on belly</li>
-    </ol>
+    <a href="emg_gyro_example.mp4" target="_blank" style="color: #0af; text-decoration: underline;">Watch demo video</a>
 
-    <p style="font-size: 14px; color: #ccc;">
-      ✅ <strong>Tip:</strong> Let your hand dangle and flex/extend to activate paddle.
-    </p>
+	<p style="font-size: 14px; color: #ccc;">
+	  ✅ Tip: Flex your biceps to trigger in-game actions. You can adjust the activation threshold using the slider — increasing it makes detection <em>less sensitive</em>, while lowering it makes it <em>more sensitive</em>.
+	</p>
+
 
     <div style="margin-top: 10px; display: flex; align-items: center; gap: 10px;">
       <input type="checkbox" id="dontShowAgain" />
@@ -157,6 +159,7 @@ prominences such as the wrist are recommended. </p>
     <button id="closeIntroBtn">Got it!</button>
   </div>
 </div>
+
 
 
   <div id="controls">
@@ -178,8 +181,11 @@ prominences such as the wrist are recommended. </p>
 <div id="banner"></div>
 
 <canvas id="gameCanvas"></canvas>
-<canvas id="emg1Plot" width="480" height="100" style="background:#111; border:1px solid #0f0; display:block; margin:10px auto;"></canvas>
-<canvas id="emg2Plot" width="480" height="200" style="background:#111; border:1px solid #0f0; display:block; margin:10px auto;"></canvas>
+<div style="text-align: center; color: #0f0; font-family: monospace; font-size: 16px;">📈 EMG 1 Signal (brown-red)</div>
+<canvas id="emg1Plot" width="480" height="100" style="background:#111; border:1px solid #0f0; display:block; margin:5px auto 20px;"></canvas>
+
+<div style="text-align: center; color: #f0f; font-family: monospace; font-size: 16px;">📉 Gyroscope (X-axis)</div>
+<canvas id="emg2Plot" width="480" height="200" style="background:#111; border:1px solid #0f0; display:block; margin:5px auto 20px;"></canvas>
 
 
   <script>
