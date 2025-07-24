@@ -136,6 +136,7 @@
     <button id="connectBtn" disabled>🔗 Connect</button>
     <button id="streamBtn" disabled>📡 Start Streaming</button>
     <button id="disconnectBtn" disabled>❌ Disconnect</button>
+	  <button id="showTipBtn">💡 Show Tip</button>
   </div>
 
   <p id="deviceName">No device selected</p>
@@ -410,6 +411,10 @@ function detectHeartRate(ppgValue) {
 
   return null;
 }
+document.getElementById("showTipBtn").addEventListener("click", () => {
+  document.getElementById("introOverlay").style.display = "flex";
+  localStorage.removeItem("hidePPGIntroOverlay");
+});
 
   </script>
 </body>

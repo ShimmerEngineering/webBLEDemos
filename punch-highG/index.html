@@ -176,6 +176,7 @@
     <button id="disconnectBtn" disabled>❌ Disconnect</button>
     <button id="resetScoreBtn">🔁 Reset High Scores</button>
 	<button onclick="showHighScoreBoard()">📜 View High Scores</button>
+	  <button id="showTipBtn">💡 Show Tip</button>
   </div>
 
   <p id="scoreDisplay">💥 Max Punch Score: 0</p>
@@ -449,6 +450,11 @@ document.getElementById('highScoreModal').style.display = 'none';
   }
   document.getElementById("introOverlay").style.display = "none";
 });
+document.getElementById("showTipBtn").addEventListener("click", () => {
+  document.getElementById("introOverlay").style.display = "flex";
+  localStorage.removeItem("hideIntroOverlay");
+});
+
   </script>
 </body>
 </html>

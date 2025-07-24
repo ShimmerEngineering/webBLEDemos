@@ -173,6 +173,7 @@ canvas {
   <button id="streamBtn" disabled>📡 Start Streaming</button>
   <button id="disconnectBtn" disabled>❌ Disconnect</button>
   <button id="startBtn">▶️ Start Game</button>
+    <button id="showTipBtn">💡 Show Tip</button>
   <p id="deviceName">No device selected</p>
 </div>
 <div style="text-align: center; margin-top: 10px;">
@@ -567,7 +568,13 @@ document.getElementById("closeIntroBtn").addEventListener("click", () => {
   }
   document.getElementById("introOverlay").style.display = "none";
 });
- function showCustomAlert(message, duration = 3000) {
+
+ document.getElementById("showTipBtn").addEventListener("click", () => {
+  document.getElementById("introOverlay").style.display = "flex";
+  localStorage.removeItem("hideIntroOverlay");
+});
+
+function showCustomAlert(message, duration = 3000) {
   const el = document.getElementById("customAlert");
   el.textContent = message;
   el.style.display = "block";
