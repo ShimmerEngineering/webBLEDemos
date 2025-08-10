@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Gyro Blocks (Tetris‑like) — Dual BLE</title>
+  <style>
+    :root{
+      --bg:#0b0c10; --panel:#11151a; --ink:#e8f0fe; --accent:#66fcf1; --accent2:#45a29e; --danger:#ff5c5c;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif}
+    .wrap{max-width:1100px;margin:0 auto;padding:16px}
+    h1{font-size:clamp(20px,3vw,28px);margin:8px 0 12px;font-weight:700;letter-spacing:.2px}
+    .grid{display:grid;gap:12px;grid-template-columns:1.2fr 1fr}
+    @media (max-width:900px){.grid{grid-template-columns:1fr;}}
+    .card{background:var(--panel);border:1px solid #1f232b;border-radius:14px;padding:14px;box-shadow:0 6px 24px rgba(0,0,0,.25)}
+    .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    button{appearance:none;border:0;border-radius:10px;padding:10px 14px;font-weight:600;cursor:pointer}
+    .b{background:#2b3240;color:#fff}
+    .b.acc{background:var(--accent);color:#001615}
+    .b.acc2{background:var(--accent2);color:#001515}
+    .b.warn{background:#f1c40f;color:#1b1400}
+    .b.dang{background:var(--danger);color:#2b0000}
+    .pill{display:inline-block;background:#202733;border:1px solid #31394a;border-radius:999px;padding:6px 10px;font-size:12px}
+    .muted{color:#b8c1d1;font-size:13px}
+    #console{background:#000;border:1px solid #213;color:#0f0;height:110px;overflow:auto;padding:8px;border-radius:8px;font-family:ui-monospace, SFMono, Menlo, monospace;font-size:12px}
+    canvas{display:block;margin:auto;border:2px solid #2b3240;background:#0e1116;width:100%;max-width:520px;height:auto;border-radius:10px}
+    .kbd{background:#222;border:1px solid #444;border-bottom-width:3px;border-radius:6px;padding:2px 6px;font-family:ui-monospace,monospace;font-size:12px}
+    label{font-size:13px;color:#c9d4e6}
+    input[type=range]{width:160px}
+    .cols{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    @media (max-width:620px){.cols{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>🎮 Gyro Blocks — Dual BLE (Move + Rotate)</h1>
+    <p class="muted">Use two Shimmer devices: one controls <strong>left/right</strong> movement; the other controls <strong>rotation</strong>. Keyboard fallback works too.</p>
+
+    <div class="grid">
+      <div class="card">
+        <canvas id="game" width="480" height="720" aria-label="Falling blocks game"></canvas>
+        <div class="row" style="justify-content:center;margin-top:10px;gap:14px">
+          <button id="startBtn" class="b acc">▶ Start</button>
+          <button id="pauseBtn" class="b">⏸ Pause</button>
+          <button id="resetBtn" class="b dang">⟲ Reset</button>
+          <span class="pill">Score: <span id="score">0</span></span>
+          <span class="pill">Lines: <span id="lines">0</span></span>
+          <span class="pill">Level: <span id="level">1</span></span>
+        </div>
+        <div class="row" style="justify-content:center;margin-top:8px;gap:18px">
+          <div>
+            <label>Move deadzone <span id="dzVal">1100</span></label><br>
+            <input id="deadzone" type="range" min="600" max="2000" step="50" value="1100">
+          </div>
+          <div>
+            <label>Move repeat (ms) <span id="repVal">120</span></label><br>
+            <input id="repeatms" type="range" min="60" max="250" step="10" value="120">
+          </div>
+          <div>
+            <label>Rotate threshold <span id="rtVal">1500</span></label><br>
+            <input id="rotth" type="range" min="800" max="2500" step="50" value="1500">
+          </div>
+          <div>
+            <label>Rotate cooldown (ms) <span id="rcVal">250</span></label><br>
+            <input id="rotcd" type="range" min="120" max="800" step="10" value="250">
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 style="margin:4px 0 10px">🔗 Bluetooth Controllers</h3>
+        <div class="cols">
+          <div class="card" style="padding:10px">
+            <h4 style="margin:0 0 8px">Device A — Move (⟵ ⟶)</h4>
+            <div class="row" style="gap:8px">
+              <button id="scanMove" class="b acc2">🔍 Scan</button>
+              <button id="connectMove" class="b" disabled>🔗 Connect</button>
+              <button id="streamMove" class="b warn" disabled>📡 Stream</button>
+              <button id="discMove" class="b dang" disabled>❌</button>
+            </div>
+            <div class="muted" id="nameMove">No device</div>
+          </div>
+
+          <div class="card" style="padding:10px">
+            <h4 style="margin:0 0 8px">Device B — Rotate (⤿ ⤾)</h4>
+            <div class="row" style="gap:8px">
+              <button id="scanRot" class="b acc2">🔍 Scan</button>
+              <button id="connectRot" class="b" disabled>🔗 Connect</button>
+              <button id="streamRot" class="b warn" disabled>📡 Stream</button>
+              <button id="discRot" class="b dang" disabled>❌</button>
+            </div>
+            <div class="muted" id="nameRot">No device</div>
+          </div>
+        </div>
+
+        <div style="margin-top:10px">
+          <div class="muted">Keyboard: <span class="kbd">←</span> <span class="kbd">→</span> move, <span class="kbd">↑</span> rotate, <span class="kbd">↓</span> soft drop, <span class="kbd">Space</span> hard drop, <span class="kbd">P</span> pause</div>
+        </div>
+
+        <h4 style="margin:12px 0 8px">Console</h4>
+        <div id="console" aria-live="polite"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  // ===== BLE Controller (Shimmer) =====
+  class ShimmerGyroController {
+    constructor({ role, serviceUUID, rxUUID, txUUID, moveCfg = {}, rotateCfg = {}, onLog = () => {} }) {
+      this.role = role; // "move" | "rotate"
+      this.serviceUUID = serviceUUID; this.rxUUID = rxUUID; this.txUUID = txUUID;
+      this.onLog = onLog;
+      this.device = null; this.server = null; this.rx = null; this.tx = null;
+      this.receiveBuffer = new Uint8Array(0); this.latest = null;
+      this.deadzone = moveCfg.deadzone ?? 1100; this.moveRepeatMs = moveCfg.repeatMs ?? 120;
+      this.rotateThreshold = rotateCfg.threshold ?? 1500; this.rotateCooldownMs = rotateCfg.cooldownMs ?? 250;
+      this._moveTimer = null; this._moveDir = 0; this._rotateCooldownUntil = 0;
+      this._zWindow = []; this._windowSize = 5;
+      // hooks
+      this.onMoveLeft = () => {}; this.onMoveRight = () => {}; this.onMoveStop = () => {};
+      this.onRotateCW = () => {}; this.onRotateCCW = () => {};
+    }
+    async scan(){ this.device = await navigator.bluetooth.requestDevice({ filters:[{ services:[this.serviceUUID] }]}); return this.device; }
+    async connect(){ if(!this.device) throw new Error("No device selected");
+      this.server = await this.device.gatt.connect();
+      const svc = await this.server.getPrimaryService(this.serviceUUID);
+      this.rx = await svc.getCharacteristic(this.rxUUID);
+      this.tx = await svc.getCharacteristic(this.txUUID);
+      await this.tx.startNotifications();
+      this.tx.addEventListener('characteristicvaluechanged', (e)=>this._onNotify(e));
+      this.onLog(`✅ [${this.role}] Connected to ${this.device.name||'device'}`);
+    }
+    async startStreaming(){ if(!this.rx) throw new Error('Not connected');
+      await this.rx.writeValue(new Uint8Array([0x05,0x80,0x02]));
+      await this._sleep(200);
+      await this.rx.writeValue(new Uint8Array([0x08,0x40,0x00,0x00]));
+      await this._sleep(200);
+      await this.rx.writeValue(new Uint8Array([0x07]));
+      this.onLog(`📡 [${this.role}] Streaming started`);
+    }
+    async disconnect(){ try{
+        if(this.tx){ await this.tx.stopNotifications(); }
+        if(this.device?.gatt?.connected){ this.device.gatt.disconnect(); }
+      } finally {
+        this.device=this.server=this.rx=this.tx=null; this._stopMoveRepeat();
+        this.onLog(`🔌 [${this.role}] Disconnected`);
+      }
+    }
+    _onNotify(event){
+      const chunk = new Uint8Array(event.target.value.buffer);
+      const merged = new Uint8Array(this.receiveBuffer.length + chunk.length);
+      merged.set(this.receiveBuffer); merged.set(chunk, this.receiveBuffer.length);
+      this.receiveBuffer = merged; let offset=0;
+      while(this.receiveBuffer.length - offset > 0){
+        const remaining = this.receiveBuffer.length - offset;
+        if(remaining===1 && this.receiveBuffer[offset]===0xFF){ offset+=1; break; }
+        if(remaining>=10 && this.receiveBuffer[offset]===0x00){
+          const pkt = this.receiveBuffer.slice(offset, offset+10);
+          const view = new DataView(pkt.buffer);
+          const gx=view.getInt16(4,true), gy=view.getInt16(6,true), gz=view.getInt16(8,true);
+          this.latest = {gx,gy,gz}; this._processGyro(gx,gy,gz); offset+=10;
+        } else { offset+=1; }
+      }
+      this.receiveBuffer = this.receiveBuffer.slice(offset);
+    }
+    _processGyro(gx,gy,gz){
+      this._zWindow.push(gz); if(this._zWindow.length>this._windowSize) this._zWindow.shift();
+      const z = Math.round(this._zWindow.reduce((a,b)=>a+b,0)/this._zWindow.length);
+      const now = performance.now();
+      if(this.role==='move'){
+        let dir = 0; if(z>this.deadzone) dir=+1; else if(z<-this.deadzone) dir=-1;
+        if(dir!==this._moveDir){ this._moveDir=dir; this._stopMoveRepeat();
+          if(dir===+1) this._startMoveRepeat(()=>this.onMoveRight());
+          else if(dir===-1) this._startMoveRepeat(()=>this.onMoveLeft());
+          else this.onMoveStop();
+        }
+      } else if(this.role==='rotate'){
+        if(now>=this._rotateCooldownUntil){
+          if(z>this.rotateThreshold){ this.onRotateCW(); this._rotateCooldownUntil=now+this.rotateCooldownMs; }
+          else if(z<-this.rotateThreshold){ this.onRotateCCW(); this._rotateCooldownUntil=now+this.rotateCooldownMs; }
+        }
+      }
+    }
+    _startMoveRepeat(action){ action(); this._moveTimer=setInterval(action, this.moveRepeatMs); }
+    _stopMoveRepeat(){ if(this._moveTimer){ clearInterval(this._moveTimer); this._moveTimer=null; } }
+    _sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+  }
+
+  // ===== Game (Tetris-like) =====
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const COLS = 10, ROWS = 20; // standard playfield size
+  let tile = Math.floor(Math.min(canvas.width/ (COLS+6), canvas.height/ROWS));
+  let offsetX = Math.floor((canvas.width - COLS*tile)/2);
+  let offsetY = Math.floor((canvas.height - ROWS*tile)/2);
+
+  function resizeMetrics(){
+    tile = Math.floor(Math.min(canvas.width/ (COLS+6), canvas.height/ROWS));
+    offsetX = Math.floor((canvas.width - COLS*tile)/2);
+    offsetY = Math.floor((canvas.height - ROWS*tile)/2);
+  }
+
+  window.addEventListener('resize', ()=>{ // keep canvas size fixed pixel for crispness; users can scale page.
+    resizeMetrics(); draw();
+  });
+
+  // Pieces (shapes use 4x4 matrices). Colors intentionally custom (not Tetris defaults)
+  const SHAPES = {
+    I: [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]],
+    J: [[2,0,0],[2,2,2],[0,0,0]],
+    L: [[0,0,3],[3,3,3],[0,0,0]],
+    O: [[4,4],[4,4]],
+    S: [[0,5,5],[5,5,0],[0,0,0]],
+    T: [[0,6,0],[6,6,6],[0,0,0]],
+    Z: [[7,7,0],[0,7,7],[0,0,0]],
+  };
+  const COLORS = {
+    0:'#000000',1:'#3cd6ff',2:'#6f7cff',3:'#ffc857',4:'#a1ff6e',5:'#ff6ea1',6:'#66fcf1',7:'#c792ea'
+  };
+
+  function rotateMatrix(m){ // CW rotate
+    const R = m.length, C = m[0].length; const res = Array.from({length:C},()=>Array(R).fill(0));
+    for(let r=0;r<R;r++) for(let c=0;c<C;c++) res[c][R-1-r]=m[r][c];
+    return res; }
+  function rotateCCW(m){ // CCW rotate
+    const R = m.length, C = m[0].length; const res = Array.from({length:C},()=>Array(R).fill(0));
+    for(let r=0;r<R;r++) for(let c=0;c<C;c++) res[C-1-c][r]=m[r][c];
+    return res; }
+
+  class Piece{
+    constructor(kind){
+      this.kind = kind; this.matrix = SHAPES[kind].map(row=>row.slice());
+      this.x = Math.floor(COLS/2) - Math.ceil(this.matrix[0].length/2);
+      this.y = -this._topPad();
+    }
+    _topPad(){ // raise spawn so visible immediately
+      for(let r=0;r<this.matrix.length;r++) if(this.matrix[r].some(v=>v)) return r; return 0; }
+  }
+
+  const board = Array.from({length:ROWS},()=>Array(COLS).fill(0));
+  let cur = null, next = null, dropInterval = 800, dropTimer = 0, lastTime = 0; // ms
+  let running=false, paused=false, score=0, lines=0, level=1;
+
+  function spawn(){ cur = next || new Piece(randomKind()); next = new Piece(randomKind()); if(collides(0,0,cur.matrix)) gameOver(); }
+  function randomKind(){ return Object.keys(SHAPES)[Math.floor(Math.random()*7)]; }
+  function collides(dx,dy,mat){
+    const R=mat.length,C=mat[0].length;
+    for(let r=0;r<R;r++) for(let c=0;c<C;c++) if(mat[r][c]){
+      const nx = cur.x + c + dx, ny = cur.y + r + dy;
+      if(nx<0||nx>=COLS||ny>=ROWS) return true; if(ny>=0 && board[ny][nx]) return true;
+    }
+    return false;
+  }
+  function merge(){
+    const mat=cur.matrix; for(let r=0;r<mat.length;r++) for(let c=0;c<mat[0].length;c++) if(mat[r][c]){
+      const y=cur.y+r, x=cur.x+c; if(y>=0) board[y][x]=mat[r][c];
+    }
+  }
+  function clearLines(){
+    let cleared=0;
+    for(let r=ROWS-1;r>=0;){
+      if(board[r].every(v=>v)){ board.splice(r,1); board.unshift(Array(COLS).fill(0)); cleared++; }
+      else r--;
+    }
+    if(cleared){
+      const pts=[0,100,300,500,800][cleared] || (cleared*300);
+      score += pts*level; lines += cleared; if(lines>=level*10){ level++; dropInterval = Math.max(120, dropInterval-70); }
+      updateHUD();
+    }
+  }
+  function hardDrop(){ while(!collides(0,1,cur.matrix)) cur.y++; lockAndNext(); }
+  function softDrop(){ if(!collides(0,1,cur.matrix)) cur.y++; else lockAndNext(); }
+  function move(dx){ if(!collides(dx,0,cur.matrix)) cur.x+=dx; draw(); }
+  function rotateCW(){
+    const r = rotateMatrix(cur.matrix); if(!collides(0,0,r)) cur.matrix=r; else {
+      // simple wall-kick: try left/right
+      if(!collides(-1,0,r)) { cur.x--; cur.matrix=r; }
+      else if(!collides(1,0,r)) { cur.x++; cur.matrix=r; }
+    }
+    draw();
+  }
+  function rotateCC(){
+    const r = rotateCCW(cur.matrix); if(!collides(0,0,r)) cur.matrix=r; else {
+      if(!collides(-1,0,r)) { cur.x--; cur.matrix=r; }
+      else if(!collides(1,0,r)) { cur.x++; cur.matrix=r; }
+    }
+    draw();
+  }
+  function lockAndNext(){ merge(); clearLines(); spawn(); }
+
+  function drawCell(x,y,val){
+    const px = offsetX + x*tile, py = offsetY + y*tile;
+    ctx.fillStyle = COLORS[val];
+    ctx.fillRect(px,py,tile-1,tile-1);
+    if(val){
+      ctx.fillStyle = 'rgba(255,255,255,.08)';
+      ctx.fillRect(px+2,py+2,tile-5,tile-5);
+    }
+  }
+  function drawBoard(){ for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++) drawCell(c,r,board[r][c]); }
+  function drawPiece(){ const m=cur.matrix; for(let r=0;r<m.length;r++) for(let c=0;c<m[0].length;c++) if(m[r][c]){
+      const y=cur.y+r, x=cur.x+c; if(y>=0) drawCell(x,y,m[r][c]);
+    } }
+  function drawFrame(){
+    ctx.strokeStyle = '#223'; ctx.lineWidth = 2;
+    ctx.strokeRect(offsetX-2, offsetY-2, COLS*tile+4, ROWS*tile+4);
+  }
+  function draw(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    // faint background grid
+    ctx.save(); ctx.globalAlpha=.06; ctx.strokeStyle='#9ab';
+    for(let r=0;r<=ROWS;r++){ const y=offsetY+r*tile; ctx.beginPath(); ctx.moveTo(offsetX,y); ctx.lineTo(offsetX+COLS*tile,y); ctx.stroke(); }
+    for(let c=0;c<=COLS;c++){ const x=offsetX+c*tile; ctx.beginPath(); ctx.moveTo(x,offsetY); ctx.lineTo(x,offsetY+ROWS*tile); ctx.stroke(); }
+    ctx.restore();
+    drawBoard(); if(cur) drawPiece(); drawFrame();
+  }
+
+  function update(time=0){
+    if(!running||paused){ lastTime=time; requestAnimationFrame(update); return; }
+    const dt = time - lastTime; lastTime = time; dropTimer += dt;
+    if(dropTimer>=dropInterval){ dropTimer=0; if(!collides(0,1,cur.matrix)) cur.y++; else lockAndNext(); }
+    draw(); requestAnimationFrame(update);
+  }
+
+  function start(){ if(running) return; running=true; paused=false; reset(false); spawn(); update(); }
+  function pause(){ paused = !paused; log(`⏸ ${paused? 'Paused':'Resumed'}`); }
+  function reset(hard=true){
+    for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++) board[r][c]=0; score=0; lines=0; level=1; dropInterval=800; updateHUD();
+    next=null; cur=null; if(hard) { running=false; paused=false; draw(); }
+  }
+  function gameOver(){ running=false; log('💥 Game Over'); }
+  function updateHUD(){ document.getElementById('score').textContent=score; document.getElementById('lines').textContent=lines; document.getElementById('level').textContent=level; }
+
+  // ===== UI buttons
+  document.getElementById('startBtn').onclick = ()=> start();
+  document.getElementById('pauseBtn').onclick = ()=> pause();
+  document.getElementById('resetBtn').onclick = ()=> { reset(); draw(); };
+
+  // ===== Keyboard fallback
+  window.addEventListener('keydown',(e)=>{
+    if(!running||paused) return;
+    switch(e.key){
+      case 'ArrowLeft': move(-1); break;
+      case 'ArrowRight': move(1); break;
+      case 'ArrowDown': softDrop(); break;
+      case 'ArrowUp': rotateCW(); break;
+      case ' ': e.preventDefault(); hardDrop(); break;
+      case 'p': case 'P': pause(); break;
+    }
+  });
+
+  // ===== Console helper
+  const consoleEl = document.getElementById('console');
+  function log(msg){ consoleEl.textContent += msg + "\n"; consoleEl.scrollTop = consoleEl.scrollHeight; }
+
+  // ===== BLE setup (two devices)
+  const SERVICE_UUID = '65333333-a115-11e2-9e9a-0800200ca100';
+  const CHAR_RX_UUID = '65333333-a115-11e2-9e9a-0800200ca102';
+  const CHAR_TX_UUID = '65333333-a115-11e2-9e9a-0800200ca101';
+
+  const mover = new ShimmerGyroController({
+    role:'move', serviceUUID:SERVICE_UUID, rxUUID:CHAR_RX_UUID, txUUID:CHAR_TX_UUID,
+    moveCfg:{deadzone:1100, repeatMs:120},
+    onLog: (m)=>log(m)
+  });
+  const rotator = new ShimmerGyroController({
+    role:'rotate', serviceUUID:SERVICE_UUID, rxUUID:CHAR_RX_UUID, txUUID:CHAR_TX_UUID,
+    rotateCfg:{threshold:1500, cooldownMs:250},
+    onLog: (m)=>log(m)
+  });
+
+  // Hook controller events -> game actions
+  mover.onMoveLeft  = ()=> { if(running && !paused) move(-1); };
+  mover.onMoveRight = ()=> { if(running && !paused) move(1); };
+  mover.onMoveStop  = ()=> {};
+  rotator.onRotateCW  = ()=> { if(running && !paused) rotateCW(); };
+  rotator.onRotateCCW = ()=> { if(running && !paused) rotateCC(); };
+
+  // BLE UI wiring (Move)
+  const nameMove = document.getElementById('nameMove');
+  document.getElementById('scanMove').onclick = async()=>{
+    try{ const d=await mover.scan(); nameMove.textContent = 'Selected: '+(d.name||'Unnamed'); document.getElementById('connectMove').disabled=false; }
+    catch(e){ log('Scan (Move) cancelled or failed'); }
+  };
+  document.getElementById('connectMove').onclick = async()=>{
+    try{ await mover.connect(); document.getElementById('streamMove').disabled=false; document.getElementById('discMove').disabled=false; nameMove.textContent = 'Connected: '+(mover.device?.name||'Device'); }
+    catch(e){ log('Connect (Move) failed'); }
+  };
+  document.getElementById('streamMove').onclick = async()=>{
+    try{ await mover.startStreaming(); }
+    catch(e){ log('Start stream (Move) failed'); }
+  };
+  document.getElementById('discMove').onclick = async()=>{ await mover.disconnect(); document.getElementById('streamMove').disabled=true; document.getElementById('connectMove').disabled=true; document.getElementById('discMove').disabled=true; nameMove.textContent='No device'; };
+
+  // BLE UI wiring (Rotate)
+  const nameRot = document.getElementById('nameRot');
+  document.getElementById('scanRot').onclick = async()=>{
+    try{ const d=await rotator.scan(); nameRot.textContent = 'Selected: '+(d.name||'Unnamed'); document.getElementById('connectRot').disabled=false; }
+    catch(e){ log('Scan (Rotate) cancelled or failed'); }
+  };
+  document.getElementById('connectRot').onclick = async()=>{
+    try{ await rotator.connect(); document.getElementById('streamRot').disabled=false; document.getElementById('discRot').disabled=false; nameRot.textContent = 'Connected: '+(rotator.device?.name||'Device'); }
+    catch(e){ log('Connect (Rotate) failed'); }
+  };
+  document.getElementById('streamRot').onclick = async()=>{
+    try{ await rotator.startStreaming(); }
+    catch(e){ log('Start stream (Rotate) failed'); }
+  };
+  document.getElementById('discRot').onclick = async()=>{ await rotator.disconnect(); document.getElementById('streamRot').disabled=true; document.getElementById('connectRot').disabled=true; document.getElementById('discRot').disabled=true; nameRot.textContent='No device'; };
+
+  // Sliders -> live config
+  const dz = document.getElementById('deadzone'); const dzVal=document.getElementById('dzVal');
+  const rp = document.getElementById('repeatms'); const rpVal=document.getElementById('repVal');
+  const rt = document.getElementById('rotth'); const rtVal=document.getElementById('rtVal');
+  const rc = document.getElementById('rotcd'); const rcVal=document.getElementById('rcVal');
+  dz.oninput = ()=>{ mover.deadzone = +dz.value; dzVal.textContent = dz.value; };
+  rp.oninput = ()=>{ mover.moveRepeatMs = +rp.value; rpVal.textContent = rp.value; };
+  rt.oninput = ()=>{ rotator.rotateThreshold = +rt.value; rtVal.textContent = rt.value; };
+  rc.oninput = ()=>{ rotator.rotateCooldownMs = +rc.value; rcVal.textContent = rc.value; };
+
+  // Safety: disconnect on unload
+  window.addEventListener('beforeunload', ()=>{ mover.disconnect(); rotator.disconnect(); });
+
+  // Boot draw
+  draw();
+  </script>
+</body>
+</html>
