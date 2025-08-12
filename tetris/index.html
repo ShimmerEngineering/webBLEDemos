@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Gyro Blocks (Tetris‑like) — Dual BLE</title>
+  <title>Gyro Blocks — Dual BLE</title>
   <style>
     :root{
       --bg:#0b0c10; --panel:#11151a; --ink:#e8f0fe; --accent:#66fcf1; --accent2:#45a29e; --danger:#ff5c5c;
@@ -188,7 +188,6 @@
     _sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
   }
 
-  // ===== Game (Tetris-like) =====
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
   const COLS = 10, ROWS = 20; // standard playfield size
@@ -206,7 +205,6 @@
     resizeMetrics(); draw();
   });
 
-  // Pieces (shapes use 4x4 matrices). Colors intentionally custom (not Tetris defaults)
   const SHAPES = {
     I: [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]],
     J: [[2,0,0],[2,2,2],[0,0,0]],
