@@ -190,7 +190,7 @@
 
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
-  const COLS = 10, ROWS = 20; // standard playfield size
+  const COLS = 12, ROWS = 24;
   let tile = Math.floor(Math.min(canvas.width/ (COLS+6), canvas.height/ROWS));
   let offsetX = Math.floor((canvas.width - COLS*tile)/2);
   let offsetY = Math.floor((canvas.height - ROWS*tile)/2);
@@ -205,18 +205,18 @@
     resizeMetrics(); draw();
   });
 
-  const SHAPES = {
-    I: [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]],
-    J: [[2,0,0],[2,2,2],[0,0,0]],
-    L: [[0,0,3],[3,3,3],[0,0,0]],
-    O: [[4,4],[4,4]],
-    S: [[0,5,5],[5,5,0],[0,0,0]],
-    T: [[0,6,0],[6,6,6],[0,0,0]],
-    Z: [[7,7,0],[0,7,7],[0,0,0]],
+ const SHAPES = {
+    I3: [[1,1,1]],                    // triomino
+	P51: [[1,1],[1,1],[1,0]],          // pentominoes
+	P52: [[1,1],[1,1],[0,1]],          // pentominoes2
+    J4: [[2,0,0],[2,2,2],[0,0,0]],
+    L4: [[0,0,3],[3,3,3],[0,0,0]],
+	J3: [[2,0,0],[2,2,0],[0,0,0]],
+    L3: [[0,0,3],[0,3,3],[0,0,0]],
+    S4: [[0,5,5],[5,5,0],[0,0,0]],
+    Z4: [[7,7,0],[0,7,7],[0,0,0]],
   };
-  const COLORS = {
-    0:'#000000',1:'#3cd6ff',2:'#6f7cff',3:'#ffc857',4:'#a1ff6e',5:'#ff6ea1',6:'#66fcf1',7:'#c792ea'
-  };
+  const COLORS = { 0:'#000000', 1:'#66fcf1' };  // one color for all pieces
 
   function rotateMatrix(m){ // CW rotate
     const R = m.length, C = m[0].length; const res = Array.from({length:C},()=>Array(R).fill(0));
@@ -242,7 +242,13 @@
   let running=false, paused=false, score=0, lines=0, level=1;
 
   function spawn(){ cur = next || new Piece(randomKind()); next = new Piece(randomKind()); if(collides(0,0,cur.matrix)) gameOver(); }
-  function randomKind(){ return Object.keys(SHAPES)[Math.floor(Math.random()*7)]; }
+  
+  function randomKind(){
+  const keys = Object.keys(SHAPES);
+  return keys[Math.floor(Math.random() * keys.length)];
+}
+
+  
   function collides(dx,dy,mat){
     const R=mat.length,C=mat[0].length;
     for(let r=0;r<R;r++) for(let c=0;c<C;c++) if(mat[r][c]){
@@ -256,18 +262,7 @@
       const y=cur.y+r, x=cur.x+c; if(y>=0) board[y][x]=mat[r][c];
     }
   }
-  function clearLines(){
-    let cleared=0;
-    for(let r=ROWS-1;r>=0;){
-      if(board[r].every(v=>v)){ board.splice(r,1); board.unshift(Array(COLS).fill(0)); cleared++; }
-      else r--;
-    }
-    if(cleared){
-      const pts=[0,100,300,500,800][cleared] || (cleared*300);
-      score += pts*level; lines += cleared; if(lines>=level*10){ level++; dropInterval = Math.max(120, dropInterval-70); }
-      updateHUD();
-    }
-  }
+  
   function hardDrop(){ while(!collides(0,1,cur.matrix)) cur.y++; lockAndNext(); }
   function softDrop(){ if(!collides(0,1,cur.matrix)) cur.y++; else lockAndNext(); }
   function move(dx){ if(!collides(dx,0,cur.matrix)) cur.x+=dx; draw(); }
@@ -286,17 +281,48 @@
     }
     draw();
   }
-  function lockAndNext(){ merge(); clearLines(); spawn(); }
+  // 2) Make scoring clearly different
+// Add this near globals:
+let piecesPlaced = 0;
 
-  function drawCell(x,y,val){
-    const px = offsetX + x*tile, py = offsetY + y*tile;
-    ctx.fillStyle = COLORS[val];
-    ctx.fillRect(px,py,tile-1,tile-1);
-    if(val){
-      ctx.fillStyle = 'rgba(255,255,255,.08)';
-      ctx.fillRect(px+2,py+2,tile-5,tile-5);
-    }
+// Give points when you lock a piece:
+function lockAndNext(){
+  merge();
+  piecesPlaced++;
+  score += 5;                 // +5 per piece placed
+  clearLines();
+  spawn();
+}
+
+// And replace clearLines() body with a simple custom scheme:
+function clearLines(){
+  let cleared = 0;
+  for (let r = ROWS - 1; r >= 0;) {
+    if (board[r].every(v => v)) { board.splice(r, 1); board.unshift(Array(COLS).fill(0)); cleared++; }
+    else r--;
   }
+  if (cleared) {
+    score += 20 * cleared * cleared;   // 20, 80, 180, 320...
+    lines += cleared;
+    if (lines >= level * 12) {         // level every 12 clears
+      level++;
+      dropInterval = Math.max(140, Math.floor(dropInterval * 0.9));
+    }
+    updateHUD();
+  }
+}
+
+
+  function drawCell(x, y, val){
+  if(!val) return;
+  const cx = offsetX + x*tile + tile/2;
+  const cy = offsetY + y*tile + tile/2;
+  ctx.beginPath();
+  ctx.arc(cx, cy, tile*0.45, 0, Math.PI*2);
+  ctx.fillStyle = COLORS[1];
+  ctx.fill();
+}
+
   function drawBoard(){ for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++) drawCell(c,r,board[r][c]); }
   function drawPiece(){ const m=cur.matrix; for(let r=0;r<m.length;r++) for(let c=0;c<m[0].length;c++) if(m[r][c]){
       const y=cur.y+r, x=cur.x+c; if(y>=0) drawCell(x,y,m[r][c]);
