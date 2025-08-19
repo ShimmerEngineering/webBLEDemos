@@ -12,6 +12,8 @@ If sufficient interest is registered, we may prioritize building a more fully sc
 
 [PPG Example](https://shimmerengineering.github.io/webBLEDemos/video-ppg/)
 
+[Two Gyro Example](https://shimmerengineering.github.io/webBLEDemos/brick/)
+
 # Requirements
 - Shimmer3R
 - FW Version >= v1.0.22
