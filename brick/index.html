@@ -1,10 +1,37 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-T26GWN0LJW"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'G-T26GWN0LJW');
+</script>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Gyro Blocks — Dual BLE</title>
   <style>
+  /* Help/Intro overlay styles */
+#introOverlay{
+  position:fixed; inset:0; background:rgba(0,0,0,.9); color:#fff;
+  display:none; justify-content:center; align-items:center; z-index:9999;
+}
+.introContent{
+  max-width:560px; padding:20px; background:#111; border:2px solid #fff;
+  border-radius:12px; text-align:left; font-size:16px;
+}
+.introContent h2{ margin:0 0 8px; color:var(--accent); }
+.introContent ul{ padding-left:20px; margin:8px 0; }
+.introContent .btnHint{
+  background:#444; padding:2px 6px; border-radius:4px; font-family:ui-monospace,monospace;
+}
+.introFoot{
+  margin-top:10px; display:flex; align-items:center; gap:10px; justify-content:space-between;
+}
+
     :root{
       --bg:#0b0c10; --panel:#11151a; --ink:#e8f0fe; --accent:#66fcf1; --accent2:#45a29e; --danger:#ff5c5c;
     }
@@ -34,6 +61,36 @@
   </style>
 </head>
 <body>
+<!-- Intro / Help Overlay -->
+<div id="introOverlay" role="dialog" aria-modal="true" aria-labelledby="introTitle">
+  <div class="introContent">
+  <h2>…Gyro Blocks (Dual BLE)…</h2>
+  <p>Quick setup for two-gyro play:</p>
+  <ul>
+<ul>
+  <li><strong>Device A — Move:</strong> First click <span class="btnHint">🔍 Scan</span>, then <span class="btnHint">🔗 Connect</span>, and finally <span class="btnHint">📡 Stream</span>. Rotate around the Z axis to move the block left and right</li>
+  <li><strong>Device B — Rotate:</strong> Same steps (<span class="btnHint">Scan</span> → <span class="btnHint">Connect</span> → <span class="btnHint">Stream</span>) with your second device. Rotate around the Z axis to rotate the block.</li>
+</ul>
+
+  </ul>
+  <img src="shimmer3_coords.png" alt="Shimmer3 Axis Diagram" style="width: 100%; max-width: 300px; display: block; margin: 10px auto;" />
+  <div style="margin:16px 0; text-align:center;">
+   <a href="bricks gameplay.mp4" target="_blank" style="color: #0af; text-decoration: underline;">🎥 Demo Video</a>
+  </div>
+  <p><strong>Requirements:</strong></p>
+  <ul>
+      <li><strong>Device:</strong> Shimmer3R</li>
+      <li><strong>Firmware:</strong> Version ≥ <code>v1.0.22</code></li>
+  </ul>
+  <div class="introFoot">
+    <label><input type="checkbox" id="dontShowAgain"> Don't show this again</label>
+    <button id="closeIntroBtn" class="b acc">Got it!</button>
+  </div>
+</div>
+
+</div>
+
+
   <div class="wrap">
     <h1>🎮 Gyro Blocks — Dual BLE (Move + Rotate)</h1>
     <p class="muted">Use two Shimmer devices: one controls <strong>left/right</strong> movement; the other controls <strong>rotation</strong>. Keyboard fallback works too.</p>
@@ -45,6 +102,10 @@
           <button id="startBtn" class="b acc">▶ Start</button>
           <button id="pauseBtn" class="b">⏸ Pause</button>
           <button id="resetBtn" class="b dang">⟲ Reset</button>
+		  <div class="row" style="justify-content:center;margin-top:6px;gap:10px">
+  <button id="showHelpBtn" class="b">💡 Help</button>
+</div>
+
           <span class="pill">Score: <span id="score">0</span></span>
           <span class="pill">Lines: <span id="lines">0</span></span>
           <span class="pill">Level: <span id="level">1</span></span>
@@ -449,6 +510,37 @@ function clearLines(){
 
   // Boot draw
   draw();
+  
+  // ===== Help overlay wiring
+window.addEventListener('DOMContentLoaded', () => {
+  // Show on first visit unless the user ticked "Don't show this again"
+  if (localStorage.getItem('hideIntroOverlay') !== 'true') {
+    const el = document.getElementById('introOverlay');
+    if (el) el.style.display = 'flex';
+  }
+});
+
+const closeIntroBtn = document.getElementById('closeIntroBtn');
+const showHelpBtn   = document.getElementById('showHelpBtn');
+
+if (closeIntroBtn) {
+  closeIntroBtn.addEventListener('click', () => {
+    const dont = document.getElementById('dontShowAgain')?.checked;
+    if (dont) localStorage.setItem('hideIntroOverlay', 'true');
+    const el = document.getElementById('introOverlay');
+    if (el) el.style.display = 'none';
+  });
+}
+
+if (showHelpBtn) {
+  showHelpBtn.addEventListener('click', () => {
+    localStorage.removeItem('hideIntroOverlay');  // so it shows next load if desired
+    const el = document.getElementById('introOverlay');
+    if (el) el.style.display = 'flex';
+  });
+}
+
+  
   </script>
 </body>
 </html>
