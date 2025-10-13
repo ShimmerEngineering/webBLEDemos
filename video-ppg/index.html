@@ -1,12 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <!--
-    Shimmer3R GSR+/Proto3 PPG Demo — Cleaned & Organized
-    - Single-file HTML (no build tools)
-    - Better structure, comments, error handling, and UI state management
-    - Uses Chart.js for a live PPG waveform and a simple BPM estimate (demo only)
-  -->
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Shimmer3R PPG Demo (Video + Live HR)</title>
@@ -37,36 +31,14 @@
       --maxw: 480px;
     }
 
-    html, body {
-      margin: 0;
-      padding: 0;
-      background: var(--bg);
-      color: var(--fg);
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-    }
-
+    html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
     header { text-align: center; padding: 12px 16px; }
     header h1 { margin: 0 0 6px; font-size: 20px; font-weight: 700; }
     header p { margin: 0; color: var(--muted); font-size: 14px; }
 
-    #controls {
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: center;
-      gap: 10px;
-      padding: 10px 12px;
-    }
+    #controls { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; padding: 10px 12px; }
 
-    button {
-      padding: 10px 16px;
-      font-size: 16px;
-      border-radius: 8px;
-      border: 1px solid transparent;
-      cursor: pointer;
-      background: #222;
-      color: var(--fg);
-      transition: transform .02s ease, opacity .2s ease;
-    }
+    button { padding: 10px 16px; font-size: 16px; border-radius: 8px; border: 1px solid transparent; cursor: pointer; background: #222; color: var(--fg); transition: transform .02s ease, opacity .2s ease; }
     button:disabled { opacity: .5; cursor: not-allowed; }
     button:active { transform: translateY(1px); }
 
@@ -79,54 +51,15 @@
     #deviceName { margin: 6px auto 2px; font-weight: 600; }
     #statusConsole { color: #0f0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin: 2px 0 10px; font-size: 14px; }
 
-    iframe {
-      display: block;
-      margin: 16px auto 0;
-      width: 100%;
-      max-width: var(--maxw);
-      aspect-ratio: 16 / 9;
-      border: none;
-      border-radius: 10px;
-      overflow: hidden;
-      box-shadow: 0 0 0 1px var(--border);
-      background: #000;
-    }
+    iframe { display: block; margin: 16px auto 0; width: 100%; max-width: var(--maxw); aspect-ratio: 16 / 9; border: none; border-radius: 10px; overflow: hidden; box-shadow: 0 0 0 1px var(--border); background: #000; }
 
-    #chartContainer {
-      max-width: var(--maxw);
-      margin: 18px auto;
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 12px;
-    }
+    #chartContainer { max-width: var(--maxw); margin: 18px auto; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
 
-    #hrDisclaimer {
-      max-width: var(--maxw);
-      margin: 8px auto 18px;
-      color: #f39c12;
-      font-size: 14px;
-    }
+    #hrDisclaimer { max-width: var(--maxw); margin: 8px auto 18px; color: #f39c12; font-size: 14px; }
 
     /* Intro Overlay */
-    #introOverlay {
-      position: fixed; inset: 0;
-      background: rgba(0,0,0,0.9);
-      color: var(--fg);
-      display: none; /* toggled at runtime */
-      justify-content: center; align-items: center;
-      z-index: 9999;
-      padding: 16px;
-    }
-    .introContent {
-      width: min(92vw, 520px);
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 18px;
-      text-align: left;
-      box-shadow: 0 8px 30px rgba(0,0,0,.5);
-    }
+    #introOverlay { position: fixed; inset: 0; background: rgba(0,0,0,0.9); color: var(--fg); display: none; justify-content: center; align-items: center; z-index: 9999; padding: 16px; }
+    .introContent { width: min(92vw, 520px); background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 18px; text-align: left; box-shadow: 0 8px 30px rgba(0,0,0,.5); }
     .introContent h2 { margin: 0 0 8px; color: var(--danger); font-size: 20px; }
     .introContent p { margin: 8px 0; }
     .introContent ul { padding-left: 20px; margin: 8px 0; }
@@ -159,7 +92,7 @@
         <li><strong>Firmware:</strong> Version ≥ <code>v1.0.22</code></li>
       </ul>
       <img src="Shimmer3R_GSR.png" alt="Shimmer3R GSR+ device" style="width: 100%; max-width: 320px; display: block; margin: 10px auto;" />
-	        <ul>
+      <ul>
         <li><strong>Device:</strong> Shimmer3R Proto3</li>
         <li><strong>Firmware:</strong> Version ≥ <code>v1.0.22</code></li>
       </ul>
@@ -217,7 +150,6 @@
 
   // Streaming command sequence (device-specific — adjust if needed)
   const CMD = {
-    // Example control bytes (based on original code):
     SAMPLING: new Uint8Array([0x05, 0x00, 0x01]),     // configure sampling 128Hz
     CONFIG:   new Uint8Array([0x08, 0x00, 0x01, 0x00]),// sensor config
     EXP_PWR:  new Uint8Array([0x5E, 0x01]),            // experimental power
@@ -248,8 +180,12 @@
     txChar: null, // notify
     receiveBuf: new Uint8Array(0),
     signalBuf: [],       // for smoothing
-    peakTimestamps: [],  // for BPM
-    chart: null
+    peakTimestamps: [],  // for BPM (demo)
+    chart: null,
+    // Drawing throttle state
+    drawQueue: [],
+    rafPending: false,
+	sampleX: 0        // <-- NEW: monotonic x for plotting
   };
 
   // =====================
@@ -271,7 +207,6 @@
   }
 
   function setStatus(msg, type = 'info') {
-    // type not used for styling here, but kept for future severity coloring
     el.statusConsole.textContent = msg;
     console.log(msg);
   }
@@ -290,55 +225,78 @@
   }
 
   // =====================
-  // Chart Setup
+  // Chart Setup (optimized)
   // =====================
   function initChart() {
-    const ctx = el.chartCanvas.getContext('2d');
-    state.chart = new Chart(ctx, {
-      type: 'line',
-      data: {
-        labels: [],
-        datasets: [{
-          label: 'PPG Signal',
-          data: [],
-          borderColor: 'cyan',
-          borderWidth: 2,
-          tension: 0.1,
-          pointRadius: 0,
-        }]
-      },
-      options: {
-        animation: false,
-        responsive: true,
-        maintainAspectRatio: false,
-        scales: {
-          x: { display: false },
-          y: {
-            title: { display: true, text: 'PPG' },
-            beginAtZero: false,
-            grid: { color: '#333' },
-            ticks: { color: '#ddd' }
-          }
+  const ctx = el.chartCanvas.getContext('2d');
+  state.chart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      // With linear x, we don't need labels at all
+      datasets: [{
+        label: 'PPG Signal',
+        data: [],                 // will be array of {x,y}
+        borderColor: 'cyan',
+        borderWidth: 2,
+        tension: 0.1,
+        pointRadius: 0,
+      }]
+    },
+    options: {
+      animation: false,
+      parsing: false,           // we’re giving raw {x,y}
+      normalized: true,
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: {
+          type: 'linear',       // <-- linear x so decimation works
+          display: false
         },
-        plugins: {
-          legend: { labels: { color: '#fff' } }
+        y: {
+          title: { display: true, text: 'PPG' },
+          beginAtZero: false,
+          grid: { color: '#333' },
+          ticks: { color: '#ddd' }
         }
+      },
+      plugins: {
+        decimation: { enabled: true, algorithm: 'min-max' },
+        legend: { labels: { color: '#fff' } }
       }
-    });
+    }
+  });
+}
+
+
+  // =====================
+  // Throttled Drawing (≈60 FPS)
+  // =====================
+  function enqueueForDraw(ppgValue) {
+    state.drawQueue.push(ppgValue);
+    if (!state.rafPending) {
+      state.rafPending = true;
+      requestAnimationFrame(flushDraw);
+    }
   }
 
-  function updatePPGChart(ppgValue) {
+  function flushDraw() {
+	state.rafPending = false;
+	const { chart } = state;
+	if (!chart) return;
     const MAX_POINTS = 512;
-    const { chart } = state;
-    if (!chart) return;
+	const ds = chart.data.datasets[0].data;
 
-    const ds = chart.data.datasets[0].data;
-    const labels = chart.data.labels;
-    if (labels.length > MAX_POINTS) { labels.shift(); ds.shift(); }
-    labels.push('');
-    ds.push(ppgValue);
-    chart.update();
+	// Push all queued samples into the dataset as {x,y}
+	while (state.drawQueue.length) {
+		const v = state.drawQueue.shift();
+		ds.push({ x: state.sampleX++, y: v });
+		if (ds.length > MAX_POINTS) ds.shift();
+	}
+
+	chart.update('none'); // no animation
   }
+
 
   // =====================
   // Heart Rate Estimation (demo only)
@@ -400,7 +358,9 @@
         const view = new DataView(packet.buffer, packet.byteOffset, packet.byteLength);
         const ppg = view.getInt16(4, true);
 
-        updatePPGChart(ppg);
+        // Queue for throttled draw instead of immediate chart.update()
+        enqueueForDraw(ppg);
+
         const bpm = detectHeartRate(ppg);
         if (bpm) setStatus(`❤️ BPM: ${bpm}`);
 
@@ -502,6 +462,8 @@
     state.receiveBuf = new Uint8Array(0);
     state.signalBuf = [];
     state.peakTimestamps = [];
+    state.drawQueue = [];
+    state.rafPending = false;
   }
 
   // =====================
