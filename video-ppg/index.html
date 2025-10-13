@@ -268,34 +268,42 @@
   });
 }
 
+	// =====================
+	// Throttled Drawing (~30 FPS)
+	// =====================
+	const FRAME_INTERVAL_MS = 1000 / 30; // target ≈ 33.3ms per update
+	let lastFrameTime = 0;
 
-  // =====================
-  // Throttled Drawing (≈60 FPS)
-  // =====================
-  function enqueueForDraw(ppgValue) {
-    state.drawQueue.push(ppgValue);
-    if (!state.rafPending) {
-      state.rafPending = true;
-      requestAnimationFrame(flushDraw);
-    }
-  }
+	function enqueueForDraw(ppgValue) {
+	  state.drawQueue.push(ppgValue);
+	  const now = performance.now();
 
-  function flushDraw() {
-	state.rafPending = false;
-	const { chart } = state;
-	if (!chart) return;
-    const MAX_POINTS = 512;
-	const ds = chart.data.datasets[0].data;
+	  // Only schedule a frame if none is pending and we’re past the 33 ms window
+	  if (!state.rafPending && (now - lastFrameTime >= FRAME_INTERVAL_MS)) {
+		state.rafPending = true;
+		requestAnimationFrame(flushDraw);
+	  }
+	}
 
-	// Push all queued samples into the dataset as {x,y}
-	while (state.drawQueue.length) {
+	function flushDraw(timestamp) {
+	  state.rafPending = false;
+	  lastFrameTime = timestamp || performance.now();
+	  const { chart } = state;
+	  if (!chart) return;
+
+	  const MAX_POINTS = 512;
+	  const ds = chart.data.datasets[0].data;
+
+	  // Push all queued samples into the dataset as {x, y}
+	  while (state.drawQueue.length) {
 		const v = state.drawQueue.shift();
 		ds.push({ x: state.sampleX++, y: v });
 		if (ds.length > MAX_POINTS) ds.shift();
-	}
+	  }
 
-	chart.update('none'); // no animation
-  }
+	  // Update without animation or layout thrash
+	  chart.update('none');
+	}
 
 
   // =====================
