@@ -218,7 +218,7 @@
   // Streaming command sequence (device-specific — adjust if needed)
   const CMD = {
     // Example control bytes (based on original code):
-    SAMPLING: new Uint8Array([0x05, 0x00, 0x01]),     // configure sampling
+    SAMPLING: new Uint8Array([0x05, 0x00, 0x01]),     // configure sampling 128Hz
     CONFIG:   new Uint8Array([0x08, 0x00, 0x01, 0x00]),// sensor config
     EXP_PWR:  new Uint8Array([0x5E, 0x01]),            // experimental power
     START:    new Uint8Array([0x07])                   // start streaming
