@@ -67,6 +67,40 @@
     .introActions { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
     .introActions button { background: var(--ok); }
     #showTipBtn { background: #444; border-color: var(--border); }
+	
+	/* Make intro overlay scrollable for smaller screens */
+	#introOverlay {
+	  overflow-y: auto;          /* allow vertical scrolling */
+	  -webkit-overflow-scrolling: touch; /* smooth scroll on iOS */
+	  align-items: flex-start;   /* start content at top on small screens */
+	  padding-top: 10vh;         /* add breathing space */
+	}
+
+	@media (min-height: 700px) {
+	  #introOverlay {
+		align-items: center;     /* center again on taller screens */
+		padding-top: 0;
+	  }
+	}
+
+	.introContent {
+	  max-height: 90vh;          /* never exceed viewport height */
+	  overflow-y: auto;          /* scroll content itself if needed */
+	  -webkit-overflow-scrolling: touch;
+	}
+	
+	/* When overlay is open, lock body scroll */
+	body.noScroll { overflow: hidden; }
+
+	/* Keep scroll contained to the overlay/content */
+	#introOverlay, .introContent { overscroll-behavior: contain; }
+
+	/* Use dynamic viewport units for better mobile behavior */
+	.introContent {
+	  max-height: 90dvh; /* instead of 90vh */
+	}
+
+
   </style>
 </head>
 <body>
@@ -219,10 +253,12 @@
     el.introOverlay.style.display = hide ? 'none' : 'flex';
   }
 
-  function closeIntro() {
-    if (el.dontShowAgain.checked) localStorage.setItem(STORAGE_KEYS.HIDE_OVERLAY, 'true');
-    el.introOverlay.style.display = 'none';
-  }
+	function closeIntro() {
+	  if (el.dontShowAgain.checked) localStorage.setItem(STORAGE_KEYS.HIDE_OVERLAY, 'true');
+	  el.introOverlay.style.display = 'none';
+	  document.body.classList.remove('noScroll');
+	  el.showTipBtn.focus(); // return focus
+	}
 
   // =====================
   // Chart Setup (optimized)
@@ -483,10 +519,13 @@
     el.streamBtn.addEventListener('click', startStreaming);
     el.disconnectBtn.addEventListener('click', disconnect);
 
-    el.showTipBtn.addEventListener('click', () => {
-      el.introOverlay.style.display = 'flex';
-      localStorage.removeItem(STORAGE_KEYS.HIDE_OVERLAY);
-    });
+    // When opening the overlay:
+	el.showTipBtn.addEventListener('click', () => {
+	  el.introOverlay.style.display = 'flex';
+	  localStorage.removeItem(STORAGE_KEYS.HIDE_OVERLAY);
+	  document.body.classList.add('noScroll');
+	  el.closeIntroBtn.focus(); // send focus into the dialog
+	});
     el.closeIntroBtn.addEventListener('click', closeIntro);
   }
 
