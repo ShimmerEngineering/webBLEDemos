@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Shimmer3R PPG Demo (Video + Live HR)</title>
 
-  <!-- Google tag (gtag.js) — keep your measurement ID below -->
+  <!-- Google tag (gtag.js) -->
   <script async src="https://www.googletagmanager.com/gtag/js?id=G-T26GWN0LJW"></script>
   <script>
     window.dataLayer = window.dataLayer || [];
@@ -67,40 +67,13 @@
     .introActions { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
     .introActions button { background: var(--ok); }
     #showTipBtn { background: #444; border-color: var(--border); }
-	
-	/* Make intro overlay scrollable for smaller screens */
-	#introOverlay {
-	  overflow-y: auto;          /* allow vertical scrolling */
-	  -webkit-overflow-scrolling: touch; /* smooth scroll on iOS */
-	  align-items: flex-start;   /* start content at top on small screens */
-	  padding-top: 10vh;         /* add breathing space */
-	}
 
-	@media (min-height: 700px) {
-	  #introOverlay {
-		align-items: center;     /* center again on taller screens */
-		padding-top: 0;
-	  }
-	}
-
-	.introContent {
-	  max-height: 90vh;          /* never exceed viewport height */
-	  overflow-y: auto;          /* scroll content itself if needed */
-	  -webkit-overflow-scrolling: touch;
-	}
-	
-	/* When overlay is open, lock body scroll */
-	body.noScroll { overflow: hidden; }
-
-	/* Keep scroll contained to the overlay/content */
-	#introOverlay, .introContent { overscroll-behavior: contain; }
-
-	/* Use dynamic viewport units for better mobile behavior */
-	.introContent {
-	  max-height: 90dvh; /* instead of 90vh */
-	}
-
-
+    /* Scroll-friendly overlay for small screens */
+    #introOverlay { overflow-y: auto; -webkit-overflow-scrolling: touch; align-items: flex-start; padding-top: 10vh; }
+    @media (min-height: 700px) { #introOverlay { align-items: center; padding-top: 0; } }
+    .introContent { max-height: 90dvh; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+    body.noScroll { overflow: hidden; }
+    #introOverlay, .introContent { overscroll-behavior: contain; }
   </style>
 </head>
 <body>
@@ -122,14 +95,10 @@
       </ul>
       <p><strong>Requirements</strong></p>
       <ul>
-        <li><strong>Device:</strong> Shimmer3R GSR+</li>
+        <li><strong>Device:</strong> Shimmer3R GSR+ / Proto3</li>
         <li><strong>Firmware:</strong> Version ≥ <code>v1.0.22</code></li>
       </ul>
       <img src="Shimmer3R_GSR.png" alt="Shimmer3R GSR+ device" style="width: 100%; max-width: 320px; display: block; margin: 10px auto;" />
-      <ul>
-        <li><strong>Device:</strong> Shimmer3R Proto3</li>
-        <li><strong>Firmware:</strong> Version ≥ <code>v1.0.22</code></li>
-      </ul>
       <img src="Shimmer3_Proto3Deluxe.png" alt="Shimmer3R Proto3 device" style="width: 100%; max-width: 320px; display: block; margin: 10px auto;" />
       <div class="introActions">
         <label style="display:flex; align-items:center; gap:8px;">
@@ -143,7 +112,7 @@
   <!-- Controls -->
   <div id="controls" aria-label="Bluetooth Controls">
     <button id="scanBtn">🔍 Scan Bluetooth</button>
-    <button id="connectBtn" disabled>🔗 Connect</button>
+    <button id="connectBtn" disabled>🔗 Inquiry</button>
     <button id="streamBtn" disabled>📡 Start Streaming</button>
     <button id="disconnectBtn" disabled>❌ Disconnect</button>
     <button id="showTipBtn" title="Show tips overlay">💡 Show Tip</button>
@@ -168,27 +137,10 @@
     ⚠️ <strong>Note:</strong> Heart rate estimation here is for demonstration only and has not been validated.
   </p>
 
-  <script>
+  <!-- App logic using shimmer3r.js -->
+  <script type="module">
   'use strict';
-
-  // =====================
-  // Config & Constants
-  // =====================
-  const STORAGE_KEYS = { HIDE_OVERLAY: 'hidePPGIntroOverlay' };
-  const BLE = {
-    SERVICE_UUID: '65333333-a115-11e2-9e9a-0800200ca100',
-    // Typical naming: RX (writes from client → peripheral), TX (notifications peripheral → client)
-    CHAR_RX_UUID: '65333333-a115-11e2-9e9a-0800200ca102',
-    CHAR_TX_UUID: '65333333-a115-11e2-9e9a-0800200ca101'
-  };
-
-  // Streaming command sequence (device-specific — adjust if needed)
-  const CMD = {
-    SAMPLING: new Uint8Array([0x05, 0x00, 0x01]),     // configure sampling 128Hz
-    CONFIG:   new Uint8Array([0x08, 0x00, 0x01, 0x00]),// sensor config
-    EXP_PWR:  new Uint8Array([0x5E, 0x01]),            // experimental power
-    START:    new Uint8Array([0x07])                   // start streaming
-  };
+  import { Shimmer3RClient } from '../ShimmerAPI/shimmer3r.js';
 
   // =====================
   // State & Elements
@@ -207,31 +159,15 @@
     chartCanvas: document.getElementById('ppgChartCanvas')
   };
 
+  const STORAGE_KEYS = { HIDE_OVERLAY: 'hidePPGIntroOverlay' };
   const state = {
-    device: null,
-    server: null,
-    rxChar: null, // write
-    txChar: null, // notify
-    receiveBuf: new Uint8Array(0),
-    signalBuf: [],       // for smoothing
-    peakTimestamps: [],  // for BPM (demo)
     chart: null,
-    // Drawing throttle state
+    signalBuf: [],
+    peakTimestamps: [],
     drawQueue: [],
     rafPending: false,
-	sampleX: 0        // <-- NEW: monotonic x for plotting
+    sampleX: 0
   };
-
-  // =====================
-  // Utilities
-  // =====================
-  const sleep = (ms) => new Promise(res => setTimeout(res, ms));
-
-  function appendToBuffer(orig, chunk) {
-    const out = new Uint8Array(orig.length + chunk.length);
-    out.set(orig); out.set(chunk, orig.length);
-    return out;
-  }
 
   function setButtons({ scan, connect, stream, disconnect }) {
     el.scanBtn.disabled = !scan;
@@ -240,122 +176,99 @@
     el.disconnectBtn.disabled = !disconnect;
   }
 
-  function setStatus(msg, type = 'info') {
+  function setStatus(msg) {
     el.statusConsole.textContent = msg;
     console.log(msg);
   }
 
   // =====================
-  // Intro Overlay Logic
+  // Intro Overlay
   // =====================
   function maybeShowIntro() {
     const hide = localStorage.getItem(STORAGE_KEYS.HIDE_OVERLAY) === 'true';
     el.introOverlay.style.display = hide ? 'none' : 'flex';
   }
-
-	function closeIntro() {
-	  if (el.dontShowAgain.checked) localStorage.setItem(STORAGE_KEYS.HIDE_OVERLAY, 'true');
-	  el.introOverlay.style.display = 'none';
-	  document.body.classList.remove('noScroll');
-	  el.showTipBtn.focus(); // return focus
-	}
+  function closeIntro() {
+    if (el.dontShowAgain.checked) localStorage.setItem(STORAGE_KEYS.HIDE_OVERLAY, 'true');
+    el.introOverlay.style.display = 'none';
+    document.body.classList.remove('noScroll');
+    el.showTipBtn.focus();
+  }
 
   // =====================
-  // Chart Setup (optimized)
+  // Chart Setup (linear x)
   // =====================
   function initChart() {
-  const ctx = el.chartCanvas.getContext('2d');
-  state.chart = new Chart(ctx, {
-    type: 'line',
-    data: {
-      // With linear x, we don't need labels at all
-      datasets: [{
-        label: 'PPG Signal',
-        data: [],                 // will be array of {x,y}
-        borderColor: 'cyan',
-        borderWidth: 2,
-        tension: 0.1,
-        pointRadius: 0,
-      }]
-    },
-    options: {
-      animation: false,
-      parsing: false,           // we’re giving raw {x,y}
-      normalized: true,
-      responsive: true,
-      maintainAspectRatio: false,
-      scales: {
-        x: {
-          type: 'linear',       // <-- linear x so decimation works
-          display: false
-        },
-        y: {
-          title: { display: true, text: 'PPG' },
-          beginAtZero: false,
-          grid: { color: '#333' },
-          ticks: { color: '#ddd' }
-        }
+    const ctx = el.chartCanvas.getContext('2d');
+    state.chart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        datasets: [{
+          label: 'PPG Signal',
+          data: [],                 // {x,y}
+          borderColor: 'cyan',
+          borderWidth: 2,
+          tension: 0.1,
+          pointRadius: 0,
+        }]
       },
-      plugins: {
-        decimation: { enabled: true, algorithm: 'min-max' },
-        legend: { labels: { color: '#fff' } }
+      options: {
+        animation: false,
+        parsing: false,
+        normalized: true,
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: { type: 'linear', display: false },
+          y: {
+            title: { display: true, text: 'PPG' },
+            beginAtZero: false,
+            grid: { color: '#333' },
+            ticks: { color: '#ddd' }
+          }
+        },
+        plugins: { decimation: { enabled: true, algorithm: 'min-max' }, legend: { labels: { color: '#fff' } } }
       }
+    });
+  }
+
+  // Throttled drawing (≈30 FPS)
+  const FRAME_INTERVAL_MS = 1000 / 30;
+  let lastFrameTime = 0;
+  function enqueueForDraw(ppgValue) {
+    state.drawQueue.push(ppgValue);
+    const now = performance.now();
+    if (!state.rafPending && (now - lastFrameTime >= FRAME_INTERVAL_MS)) {
+      state.rafPending = true;
+      requestAnimationFrame(flushDraw);
     }
-  });
-}
+  }
+  function flushDraw(ts) {
+    state.rafPending = false;
+    lastFrameTime = ts || performance.now();
+    const chart = state.chart; if (!chart) return;
 
-	// =====================
-	// Throttled Drawing (~30 FPS)
-	// =====================
-	const FRAME_INTERVAL_MS = 1000 / 30; // target ≈ 33.3ms per update
-	let lastFrameTime = 0;
-
-	function enqueueForDraw(ppgValue) {
-	  state.drawQueue.push(ppgValue);
-	  const now = performance.now();
-
-	  // Only schedule a frame if none is pending and we’re past the 33 ms window
-	  if (!state.rafPending && (now - lastFrameTime >= FRAME_INTERVAL_MS)) {
-		state.rafPending = true;
-		requestAnimationFrame(flushDraw);
-	  }
-	}
-
-	function flushDraw(timestamp) {
-	  state.rafPending = false;
-	  lastFrameTime = timestamp || performance.now();
-	  const { chart } = state;
-	  if (!chart) return;
-
-	  const MAX_POINTS = 512;
-	  const ds = chart.data.datasets[0].data;
-
-	  // Push all queued samples into the dataset as {x, y}
-	  while (state.drawQueue.length) {
-		const v = state.drawQueue.shift();
-		ds.push({ x: state.sampleX++, y: v });
-		if (ds.length > MAX_POINTS) ds.shift();
-	  }
-
-	  // Update without animation or layout thrash
-	  chart.update('none');
-	}
-
+    const MAX_POINTS = 512;
+    const ds = chart.data.datasets[0].data;
+    while (state.drawQueue.length) {
+      const v = state.drawQueue.shift();
+      ds.push({ x: state.sampleX++, y: v });
+      if (ds.length > MAX_POINTS) ds.shift();
+    }
+    chart.update('none');
+  }
 
   // =====================
-  // Heart Rate Estimation (demo only)
+  // Demo HR estimator
   // =====================
   function detectHeartRate(ppgValue) {
     const now = Date.now();
-
-    // Simple moving average smoothing (N=10)
     const buf = state.signalBuf;
     buf.push(ppgValue);
     if (buf.length > 10) buf.shift();
     const smoothed = buf.reduce((a, b) => a + b, 0) / buf.length;
 
-    // Naive peak detection: previous sample > previous-1 & above threshold
-    const threshold = 30; // adjust per device gain
+    const threshold = 30; // tune per gain
     if (
       buf.length >= 3 &&
       buf[buf.length - 2] > buf[buf.length - 3] &&
@@ -363,7 +276,6 @@
     ) {
       const lastPeak = state.peakTimestamps[state.peakTimestamps.length - 1] || 0;
       const dt = now - lastPeak;
-      // Debounce: ignore peaks <300ms apart ( >200 bpm upper bound )
       if (dt > 300) {
         state.peakTimestamps.push(now);
         if (state.peakTimestamps.length > 10) state.peakTimestamps.shift();
@@ -372,8 +284,7 @@
           const ts = state.peakTimestamps;
           const intervals = ts.slice(1).map((t, i) => t - ts[i]);
           const avg = intervals.reduce((a, b) => a + b, 0) / intervals.length;
-          const bpm = 60000 / avg;
-          return Math.round(bpm);
+          return Math.round(60000 / avg);
         }
       }
     }
@@ -381,151 +292,90 @@
   }
 
   // =====================
-  // BLE Notification Parser
+  // Shimmer3R library wiring
   // =====================
-  function handleNotifications(evt) {
-    const value = new Uint8Array(evt.target.value.buffer);
-    state.receiveBuf = appendToBuffer(state.receiveBuf, value);
+  const shim = new Shimmer3RClient();
 
-    // ACK handling: if the peripheral sends single 0xFF
-    if (state.receiveBuf.length === 1 && state.receiveBuf[0] === 0xFF) {
-      state.receiveBuf = new Uint8Array(0);
-      return;
-    }
+  shim.onStatus = (msg) => setStatus(msg);
 
-    // Packetized format: 6 bytes per frame, leading 0x00, last 2 bytes = PPG (int16 LE)
-    let offset = 0;
-    const buf = state.receiveBuf;
-    while (buf.length - offset >= 6) {
-      if (buf[offset] === 0x00) {
-        const packet = buf.slice(offset, offset + 6);
-        const view = new DataView(packet.buffer, packet.byteOffset, packet.byteLength);
-        const ppg = view.getInt16(4, true);
+  shim.onInquiry = (info) => {
+    // Show selected device & parsed schema
+    el.deviceName.textContent = `Selected: ${shim.device?.name || 'Shimmer3R'}`;
+    console.log('Inquiry info:', info);
+    // Enable streaming once schema is known
+    setButtons({ scan: true, connect: false, stream: true, disconnect: true });
+    setStatus('✅ Inquiry received. Schema ready.');
+  };
 
-        // Queue for throttled draw instead of immediate chart.update()
-        enqueueForDraw(ppg);
-
-        const bpm = detectHeartRate(ppg);
-        if (bpm) setStatus(`❤️ BPM: ${bpm}`);
-
-        offset += 6;
-      } else {
-        // Resync if out of alignment
-        offset += 1;
-      }
-    }
-
-    // Keep leftover partial bytes
-    state.receiveBuf = buf.slice(offset);
-  }
+  shim.onStreamFrame = (oc) => {
+    const field = oc.get('PPG') || oc.fields.find(f => typeof f.value === 'number');
+    if (!field) return;
+    const ppg = field.value;
+    enqueueForDraw(ppg);
+    const bpm = detectHeartRate(ppg);
+    if (bpm) setStatus(`❤️ BPM: ${bpm}`);
+  };
 
   // =====================
-  // BLE Actions
-  // =====================
-  async function scan() {
-    try {
-      const device = await navigator.bluetooth.requestDevice({
-        filters: [{ services: [BLE.SERVICE_UUID] }]
-      });
-      state.device = device;
-      el.deviceName.textContent = `Selected: ${device.name || 'Unnamed Device'}`;
-      setButtons({ scan: true, connect: true, stream: false, disconnect: false });
-      setStatus('🔎 Device selected. Click Connect.');
-    } catch (err) {
-      setStatus(`Scan cancelled or failed: ${err.message}`);
-    }
-  }
-
-  async function connect() {
-    if (!state.device) return alert('No device selected.');
-    try {
-      state.server = await state.device.gatt.connect();
-      const service = await state.server.getPrimaryService(BLE.SERVICE_UUID);
-      state.rxChar = await service.getCharacteristic(BLE.CHAR_RX_UUID);
-      state.txChar = await service.getCharacteristic(BLE.CHAR_TX_UUID);
-
-      await state.txChar.startNotifications();
-      state.txChar.addEventListener('characteristicvaluechanged', handleNotifications);
-
-      setButtons({ scan: true, connect: false, stream: true, disconnect: true });
-      setStatus(`✅ Connected to: ${state.device.name || 'Unnamed Device'}`);
-    } catch (err) {
-      setStatus(`Connection failed: ${err.message}`);
-    }
-  }
-
-  async function startStreaming() {
-    if (!state.rxChar) return alert('Not connected to device.');
-    try {
-      await state.rxChar.writeValue(CMD.SAMPLING);
-      setStatus('Sent sampling command (0x05)');
-      await sleep(200);
-
-      await state.rxChar.writeValue(CMD.CONFIG);
-      setStatus('Sent config command (0x08)');
-      await sleep(200);
-
-      await state.rxChar.writeValue(CMD.EXP_PWR);
-      setStatus('Sent exp power command (0x5E)');
-      await sleep(200);
-
-      await state.rxChar.writeValue(CMD.START);
-      setStatus('📡 Streaming started (0x07)');
-    } catch (err) {
-      setStatus(`Stream start failed: ${err.message}`);
-    }
-  }
-
-  async function disconnect() {
-    try {
-      if (state.txChar && state.device?.gatt?.connected) {
-        try {
-          await state.txChar.stopNotifications();
-          state.txChar.removeEventListener('characteristicvaluechanged', handleNotifications);
-          setStatus('🔕 Notifications stopped');
-        } catch (notifyErr) {
-          console.warn('Warn: stopNotifications:', notifyErr);
-        }
-      }
-      if (state.device?.gatt?.connected) {
-        state.device.gatt.disconnect();
-        setStatus('🔌 Disconnected');
-      }
-    } catch (err) {
-      console.warn('Disconnect error:', err);
-    }
-
-    // Reset UI and state
-    el.deviceName.textContent = 'No device selected';
-    setButtons({ scan: true, connect: false, stream: false, disconnect: false });
-
-    state.device = null;
-    state.server = null;
-    state.rxChar = null;
-    state.txChar = null;
-    state.receiveBuf = new Uint8Array(0);
-    state.signalBuf = [];
-    state.peakTimestamps = [];
-    state.drawQueue = [];
-    state.rafPending = false;
-  }
-
-  // =====================
-  // Event Wiring
+  // UI Actions
   // =====================
   function bindEvents() {
-    el.scanBtn.addEventListener('click', scan);
-    el.connectBtn.addEventListener('click', connect);
-    el.streamBtn.addEventListener('click', startStreaming);
-    el.disconnectBtn.addEventListener('click', disconnect);
+    // Scan: connect() via library (does browser device selection + GATT)
+    el.scanBtn.addEventListener('click', async () => {
+      try {
+        await shim.connect();
+        el.deviceName.textContent = `Selected: ${shim.device?.name || 'Shimmer3R'}`;
+        setButtons({ scan: true, connect: true, stream: false, disconnect: true });
+        setStatus('🔎 Connected to device. Click Inquiry to fetch schema.');
+      } catch (e) {
+        setStatus(`Scan/connect failed: ${e.message}`);
+      }
+    });
 
-    // When opening the overlay:
-	el.showTipBtn.addEventListener('click', () => {
-	  el.introOverlay.style.display = 'flex';
-	  localStorage.removeItem(STORAGE_KEYS.HIDE_OVERLAY);
-	  document.body.classList.add('noScroll');
-	  el.closeIntroBtn.focus(); // send focus into the dialog
-	});
+    // Inquiry: send 0x01 and build schema from response
+    el.connectBtn.addEventListener('click', async () => {
+      try {
+	    await shim.setInternalExpPower(1);
+	    await shim.setSamplingRate(128);
+        await shim.setSensors(256);
+		await shim.inquiry();
+      } catch (e) {
+        setStatus(`Inquiry failed: ${e.message}`);
+      }
+    });
+
+    // Start streaming: sends 0x07
+    el.streamBtn.addEventListener('click', async () => {
+      try {
+        await shim.startStreaming();
+        setStatus('📡 Streaming started (0x07)');
+      } catch (e) {
+        setStatus(`Start stream failed: ${e.message}`);
+      }
+    });
+
+    // Disconnect
+    el.disconnectBtn.addEventListener('click', async () => {
+      try {
+        await shim.disconnect();
+      } catch {}
+      el.deviceName.textContent = 'No device selected';
+      setButtons({ scan: true, connect: false, stream: false, disconnect: false });
+      // reset local state
+      state.signalBuf = [];
+      state.peakTimestamps = [];
+      state.drawQueue = [];
+      state.rafPending = false;
+      setStatus('🔌 Disconnected');
+    });
+
+    // Overlay open/close
+    el.showTipBtn.addEventListener('click', () => {
+      el.introOverlay.style.display = 'flex';
+      localStorage.removeItem(STORAGE_KEYS.HIDE_OVERLAY);
+      document.body.classList.add('noScroll');
+      el.closeIntroBtn.focus();
+    });
     el.closeIntroBtn.addEventListener('click', closeIntro);
   }
 
