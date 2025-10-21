@@ -152,6 +152,27 @@ async setInternalExpPower(expPower) {
   return { expPower, ackRemainder };
 }
 
+/**
+* Enable EMG front-ends (EXG1 + EXG2) with fixed register sequences.
+* Call after connect & basic setup (setInternalExpPower / setSamplingRate / setSensors).
+*/
+async enableEMG() {
+  if (!this.rx) throw new Error('Not connected (RX missing)');
+
+  // Fixed, known-good sequences (do not change)
+  const exg1 = new Uint8Array([0x61, 0x00, 0x00, 0x0A, 0x02, 0xA8, 0x10, 0x69, 0x60, 0x20, 0x00, 0x00, 0x02, 0x03]);
+  const exg2 = new Uint8Array([0x61, 0x01, 0x00, 0x0A, 0x02, 0xA0, 0x10, 0xE1, 0xE1, 0x00, 0x00, 0x00, 0x02, 0x01]);
+
+  this._emitStatus('Enabling EMG (EXG1)…');
+  await this._write(exg1);
+  await this._waitForAck(1000);
+
+  this._emitStatus('Enabling EMG (EXG2)…');
+  await this._write(exg2);
+  await this._waitForAck(1000);
+
+  this._emitStatus('EMG front-ends configured.');
+}
 
 /**
  * Enable sensors via a 24-bit bitmask.
