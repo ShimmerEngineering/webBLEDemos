@@ -31,10 +31,10 @@ const CHANNEL_FORMATS = {
   0x0A: { name: 'GYRO_X', fmt: 'i16', endian: 'le', sizeBytes: 2 },
   0x0B: { name: 'GYRO_Y', fmt: 'i16', endian: 'le', sizeBytes: 2 },
   0x0C: { name: 'GYRO_Z', fmt: 'i16', endian: 'le', sizeBytes: 2 },
-  0x27: { name: 'ECG_LA_RA', fmt: 'u12', endian: 'le', sizeBytes: 0 },
-  0x28: { name: 'ECG_LL_RA', fmt: 'u12', endian: 'le', sizeBytes: 0 },
-  0x12: { name: 'PPG', fmt: 'i16', endian: 'le', sizeBytes: 2 },
-  0x23: { name: 'VSENSE', fmt: 'i16', endian: 'le', sizeBytes: 2 },
+  0x1D: { name: 'Exg1_Status', fmt: 'u8', endian: 'le', sizeBytes: 1 },
+  0x23: { name: 'Exg1_CH1_16Bit', fmt: 'i16', endian: 'be', sizeBytes: 2 },
+  0x24: { name: 'Exg1_CH2_16Bit', fmt: 'i16', endian: 'be', sizeBytes: 2 },
+  0x12: { name: 'PPG', fmt: 'i16', endian: 'le', sizeBytes: 2 }
 };
 
 export class Shimmer3RClient {
