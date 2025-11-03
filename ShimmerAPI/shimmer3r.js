@@ -3,7 +3,7 @@
 // Your note: "timestamp is u24, so layout is: 0x00  [u24 timestamp]  <channel samples...>"
 // This build defaults to u24, and you can also pass { timestampFmt: 'u24' } in the constructor.
 
-const OPCODES = { DATA: 0x00, INQUIRY_CMD: 0x01, INQUIRY_RSP: 0x02, START_STREAM: 0x07, ACK: 0xFF, SAMPLING_RATE: 0x05, SET_SENSORS_CMD: 0x08, SET_INTERNAL_EXP_POWER_ENABLE_CMD: 0x5E};
+const OPCODES = { DATA: 0x00, INQUIRY_CMD: 0x01, INQUIRY_RSP: 0x02, START_STREAM: 0x07, STOP_STREAM: 0x20, ACK: 0xFF, SAMPLING_RATE: 0x05, SET_SENSORS_CMD: 0x08, SET_INTERNAL_EXP_POWER_ENABLE_CMD: 0x5E};
 
 const DEFAULTS = {
   SERVICE_UUID: '65333333-a115-11e2-9e9a-0800200ca100',
@@ -16,6 +16,33 @@ const TIMESTAMP_FIELD = {
   u24: { name: 'TIMESTAMP', fmt: 'u24', endian: 'le', sizeBytes: 3 },
 };
 
+// --- Sensor bitmap definitions (Shimmer3) ---
+export const SensorBitmapShimmer3 = {
+  SENSOR_A_ACCEL:        0x000080,
+  SENSOR_GYRO:           0x000040,
+  SENSOR_MAG:            0x000020,
+  SENSOR_GSR:            0x000004,
+
+  SENSOR_VBATT:          0x002000,
+  SENSOR_D_ACCEL:        0x001000,
+  SENSOR_PRESSURE:       0x040000,
+  SENSOR_EXG1_24BIT:     0x000010,
+  SENSOR_EXG2_24BIT:     0x000008,
+  SENSOR_EXG1_16BIT:     0x100000,
+  SENSOR_EXG2_16BIT:     0x080000,
+  SENSOR_BRIDGE_AMP:     0x008000,
+  SENSOR_ACCEL_ALT:      0x400000,
+  SENSOR_MAG_ALT:        0x200000,
+
+  SENSOR_EXT_A0:         0x000002,
+  SENSOR_EXT_A1:         0x000001,
+  SENSOR_EXT_A2:         0x000800,
+  SENSOR_INT_A3:         0x000400,
+  SENSOR_INT_A0:         0x000200,
+  SENSOR_INT_A1:         0x000100,
+  SENSOR_INT_A2:         0x800000
+};
+
 // Minimal ObjectCluster analogue
 export class ObjectCluster {
   constructor(deviceId){ this.deviceId=deviceId; this.fields=[]; this.raw=null; }
@@ -25,12 +52,18 @@ export class ObjectCluster {
 
 // Example subset (extend as needed)
 const CHANNEL_FORMATS = {
-  0x00: { name: 'ACCEL_X', fmt: 'i16', endian: 'le', sizeBytes: 2 },
-  0x01: { name: 'ACCEL_Y', fmt: 'i16', endian: 'le', sizeBytes: 2 },
-  0x02: { name: 'ACCEL_Z', fmt: 'i16', endian: 'le', sizeBytes: 2 },
+  0x00: { name: 'LN_ACCEL_X', fmt: 'i16', endian: 'le', sizeBytes: 2 },
+  0x01: { name: 'LN_ACCEL_Y', fmt: 'i16', endian: 'le', sizeBytes: 2 },
+  0x02: { name: 'LN_ACCEL_Z', fmt: 'i16', endian: 'le', sizeBytes: 2 },
+  0x04: { name: 'WR_ACCEL_X', fmt: 'i16', endian: 'le', sizeBytes: 2 },
+  0x05: { name: 'WR_ACCEL_Y', fmt: 'i16', endian: 'le', sizeBytes: 2 },
+  0x06: { name: 'WR_ACCEL_Z', fmt: 'i16', endian: 'le', sizeBytes: 2 },
   0x0A: { name: 'GYRO_X', fmt: 'i16', endian: 'le', sizeBytes: 2 },
   0x0B: { name: 'GYRO_Y', fmt: 'i16', endian: 'le', sizeBytes: 2 },
   0x0C: { name: 'GYRO_Z', fmt: 'i16', endian: 'le', sizeBytes: 2 },
+  0x07: { name: 'MAG_X', fmt: 'i16', endian: 'le', sizeBytes: 2 },
+  0x08: { name: 'MAG_Y', fmt: 'i16', endian: 'le', sizeBytes: 2 },
+  0x09: { name: 'MAG_Z', fmt: 'i16', endian: 'le', sizeBytes: 2 },
   0x1D: { name: 'Exg1_Status', fmt: 'u8', endian: 'le', sizeBytes: 1 },
   0x23: { name: 'Exg1_CH1_16Bit', fmt: 'i16', endian: 'be', sizeBytes: 2 },
   0x24: { name: 'Exg1_CH2_16Bit', fmt: 'i16', endian: 'be', sizeBytes: 2 },
@@ -55,6 +88,7 @@ export class Shimmer3RClient {
 
     // Stash for ACK+RSP in same notify
     this._lastAckRemainder = null; // Uint8Array | null
+	this.enabledSensors = 0x000000; // store 24-bit bitmask
   }
 
   _log(...a){ if(this.debug) console.log('[Shimmer3R]', ...a); }
@@ -253,39 +287,125 @@ async setSensors(sensors) {
     this._emitStatus('START_STREAM ACK received; frames should follow');
   }
 
+  async stopStreaming(){
+    this._emitStatus('STOP_STREAM → waiting for ACK…');
+    await this._write(new Uint8Array([OPCODES.STOP_STREAM]));
+    const remainder = await this._waitForAck(1000);
+    if (remainder && remainder.length){ this._log('Unexpected data after STOP_STREAM ACK (appending to buffer):', remainder); this._rxBuf = concatU8(this._rxBuf, remainder); }
+    this._emitStatus('STOP_STREAM ACK received; streaming stopped.');
+  }
+
   // ---- Inquiry decode → schema ----
-  _interpretInquiryResponseShimmer3R(u8){
-    let base = 0; if (u8[0]===OPCODES.INQUIRY_RSP && u8.length>=2) base=1;
+// ✅ Best-practice version of `_interpretInquiryResponseShimmer3R()` and `_buildSchema()`
+// This approach mirrors the C# `InterpretDataPacketFormat()` logic more closely.
+// It returns a schema object that includes not only field info, but also enabledSensors and packetSize.
 
-    const adcRaw = u16le(u8, base+0);
-    const samplingHz = 32768/(adcRaw||1);
+_interpretInquiryResponseShimmer3R(u8) {
+  let base = 0;
+  if (u8[0] === OPCODES.INQUIRY_RSP && u8.length >= 2) base = 1;
 
-    const numCh = u8[base+9] ?? 0;
-    const bufSize = u8[base+10] ?? 0;
-    const chStart = base+11; const chEnd = chStart + numCh; const channelIds = [...u8.slice(chStart, chEnd)];
+  const adcRaw = u16le(u8, base + 0);
+  const samplingHz = 32768 / (adcRaw || 1);
 
-    // Build schema — **force u24 if configured**
-    const guessed = this._guessTimestampFmt(u8, base);
-    const tsFmt = this.forceTimestampFmt || guessed;
-    const schema = this._buildSchema(channelIds, tsFmt);
-    this.schema = schema;
+  const numCh = u8[base + 9] ?? 0;
+  const bufSize = u8[base + 10] ?? 0;
+  const chStart = base + 11;
+  const chEnd = chStart + numCh;
+  const channelIds = [...u8.slice(chStart, chEnd)];
 
-    this._log(`Schema built: timestampFmt=${schema.timestampFmt}, fields=${schema.fields.length}`);
+ 
+  // Build schema — fixed to 24-bit timestamp format
+  const tsFmt = 'u24'; // Always use 24-bit timestamp
+  const schema = this._buildSchemaFromChannels(channelIds, tsFmt);
 
-    return { opcode:u8[0], adcRaw, samplingHz, numChannels:numCh, bufferSize:bufSize, channelIds, schema, bytes:u8.slice(0) };
+  this.schema = schema;
+  this._log(
+    `Schema built: timestampFmt=${schema.timestampFmt}, fields=${schema.fields.length}, enabledSensors=0x${schema.enabledSensors.toString(16)}`
+  );
+
+  return {
+    opcode: u8[0],
+    adcRaw,
+    samplingHz,
+    numChannels: numCh,
+    bufferSize: bufSize,
+    channelIds,
+    schema,
+    bytes: u8.slice(0)
+  };
+}
+
+_buildSchemaFromChannels(channelIds, timestampFmt = 'u24') {
+  const fields = [];
+  const ts = timestampFmt === 'u24' ? TIMESTAMP_FIELD.u24 : TIMESTAMP_FIELD.u16;
+  let frameBytes = ts.sizeBytes;
+  let hasPacked12 = false;
+  let enabledSensors = 0;
+  let packetSize = ts.sizeBytes; // match C# logic
+
+  for (const id of channelIds) {
+    const fmt = CHANNEL_FORMATS[id];
+    if (!fmt) {
+      fields.push({ id, name: `CH_${hex2(id)}`, fmt: 'i16', endian: 'le', sizeBytes: 2 });
+      packetSize += 2;
+      continue;
+    }
+
+    fields.push({ id, ...fmt });
+    packetSize += fmt.sizeBytes || 2;
+
+    if (fmt.fmt === 'u12' || fmt.fmt === 'i12') hasPacked12 = true;
+
+    // Sensor bitmask logic — simplified Shimmer3R-only version
+    switch (id) {
+      case 0x00:
+      case 0x01:
+      case 0x02:
+        enabledSensors |= SensorBitmapShimmer3.SENSOR_A_ACCEL;
+        break;
+      case 0x04:
+      case 0x05:
+      case 0x06:
+        enabledSensors |= SensorBitmapShimmer3.SENSOR_D_ACCEL;
+        break;
+      case 0x07:
+      case 0x08:
+      case 0x09:
+        enabledSensors |= SensorBitmapShimmer3.SENSOR_MAG;
+        break;
+      case 0x0A:
+      case 0x0B:
+      case 0x0C:
+        enabledSensors |= SensorBitmapShimmer3.SENSOR_GYRO;
+        break;
+      case 0x12:
+        enabledSensors |= SensorBitmapShimmer3.SENSOR_PRESSURE;
+        break;
+      case 0x1D:
+      case 0x23:
+      case 0x24:
+        enabledSensors |= SensorBitmapShimmer3.SENSOR_EXG1_16BIT;
+        break;
+      case 0x25:
+      case 0x26:
+        enabledSensors |= SensorBitmapShimmer3.SENSOR_EXG2_16BIT;
+        break;
+      default:
+        console.warn(`⚠️ Unmapped channel ID 0x${id.toString(16)} — added as generic i16.`);
+    }
   }
-  _guessTimestampFmt(u8, base){ return (u8.length - base) > 20 ? 'u24' : 'u16'; }
-  _buildSchema(channelIds, timestampFmt='u24'){
-    const fields=[]; const ts = timestampFmt==='u24'?TIMESTAMP_FIELD.u24:TIMESTAMP_FIELD.u16; let frameBytes=ts.sizeBytes; let hasPacked12=false;
-    for (const id of channelIds){ const fmt=CHANNEL_FORMATS[id]; if(!fmt){ fields.push({id,name:`CH_${hex2(id)}`,fmt:'i16',endian:'le',sizeBytes:2}); frameBytes+=2; continue; } fields.push({id,...fmt}); if(fmt.fmt==='u12'||fmt.fmt==='i12') hasPacked12=true; else frameBytes+=(fmt.sizeBytes||0); }
-    return {
-	  timestampFmt,
-	  fields,
-	  frameBytes,
-	  hasPacked12,
-	  dataPreambleByte: 0x00   // <-- every frame starts with 0x00
-	};
-  }
+  
+  this.enabledSensors = enabledSensors;
+
+  return {
+    timestampFmt,
+    fields,
+    frameBytes: packetSize,
+    hasPacked12,
+    enabledSensors,
+    dataPreambleByte: 0x00
+  };
+}
 
   // ---- Streaming parser (unchanged logic, logs included) ----
   _parseBySchema() {
