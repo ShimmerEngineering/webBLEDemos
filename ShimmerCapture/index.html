@@ -11,7 +11,7 @@
     let isStreaming = false;
     let isSaving = false;
     let chart, chartData = {}, fileBuffer = [], headerRow = [];
-    let sampleCounter = 0; // counter to increment x-axis values
+    let sampleCounter = 0;
     const ctx = document.getElementById('chart').getContext('2d');
 
     // Build Sensor Dropdown Menu
@@ -23,13 +23,24 @@
       sensorMenu.appendChild(option);
     }
 
+    async function refreshEnabledSensors() {
+      const enabled = shimmer.getEnabledSensors();
+      for (const opt of sensorMenu.options) {
+        const bit = parseInt(opt.value);
+        opt.selected = (enabled & bit) !== 0;
+      }
+      document.getElementById('status').textContent = `Enabled sensors: 0x${enabled.toString(16).toUpperCase()}`;
+    }
+
     document.getElementById('applySensorsBtn').onclick = async () => {
       try {
         const selectedOptions = [...sensorMenu.selectedOptions];
         if (selectedOptions.length === 0) return alert('Select at least one sensor');
         let bitmask = 0;
         selectedOptions.forEach(opt => bitmask |= parseInt(opt.value));
-        await shimmer.setSensors(bitmask);
+        const result = await shimmer.setSensors(bitmask);
+        await refreshEnabledSensors();
+        buildSignalList(shimmer.schema.fields);
         document.getElementById('status').textContent = `Sensors applied (0x${bitmask.toString(16).toUpperCase()})`;
       } catch (e) { alert(e); }
     };
@@ -38,9 +49,10 @@
     document.getElementById('connectBtn').onclick = async () => {
       try {
         await shimmer.connect();
-        document.getElementById('status').textContent = 'Connected.';
+        document.getElementById('status').textContent = 'Connected. Running Inquiry...';
         const info = await shimmer.inquiry();
         buildSignalList(info.schema.fields);
+        await refreshEnabledSensors();
       } catch (e) { alert(e); }
     };
 
@@ -54,22 +66,22 @@
       isStreaming = true;
       fileBuffer = [];
       headerRow = [];
-      sampleCounter = 0; // reset counter when starting
+      sampleCounter = 0;
       await shimmer.startStreaming();
       shimmer.onStreamFrame = onFrame;
       document.getElementById('status').textContent = 'Streaming…';
     };
 
-	document.getElementById('stopBtn').onclick = async () => {
-	  isStreaming = false;
-	  try {
-		await shimmer.stopStreaming();
-		document.getElementById('status').textContent = 'Stream stopped.';
-	  } catch (e) {
-		console.error('Error while stopping stream:', e);
-		alert('Error stopping stream: ' + e.message);
-	  }
-	};
+    document.getElementById('stopBtn').onclick = async () => {
+      isStreaming = false;
+      try {
+        await shimmer.stopStreaming();
+        document.getElementById('status').textContent = 'Stream stopped.';
+      } catch (e) {
+        console.error('Error while stopping stream:', e);
+        alert('Error stopping stream: ' + e.message);
+      }
+    };
 
     document.getElementById('saveBtn').onclick = () => {
       isSaving = !isSaving;
@@ -169,7 +181,7 @@
     <button id="disconnectBtn">Disconnect</button>
     <button id="saveBtn">Start Saving</button>
 
-    <select id="sensorMenu" multiple size="5" style="margin-left:10px;"></select>
+    <select id="sensorMenu" multiple size="5" style="margin-left:10px; min-width: 220px;"></select>
     <button id="applySensorsBtn">Apply Sensors</button>
   </div>
 

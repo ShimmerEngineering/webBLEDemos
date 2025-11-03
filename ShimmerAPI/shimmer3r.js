@@ -186,10 +186,13 @@ async setInternalExpPower(expPower) {
   return { expPower, ackRemainder };
 }
 
+getEnabledSensors() {
+  return this.enabledSensors;
+}
 
 /**
  * Enable sensors via a 24-bit bitmask.
- * Flow: write → wait for ACK.
+ * Flow: write → wait for ACK → automatically perform Inquiry to refresh schema.
  * @param {number} sensors - 24-bit bitmask of sensors to enable (0–0xFFFFFF).
  */
 async setSensors(sensors) {
@@ -202,8 +205,8 @@ async setSensors(sensors) {
   sensors = (sensors >>> 0) & 0xFFFFFF;
 
   const b1 = sensors & 0xFF;
-  const b2 = (sensors >>> 8) & 0xFF;   // unsigned shift
-  const b3 = (sensors >>> 16) & 0xFF;  // unsigned shift
+  const b2 = (sensors >>> 8) & 0xFF;
+  const b3 = (sensors >>> 16) & 0xFF;
   const cmd = new Uint8Array([OPCODES.SET_SENSORS_CMD, b1, b2, b3]);
 
   this._emitStatus(
@@ -211,13 +214,25 @@ async setSensors(sensors) {
   );
 
   await this._write(cmd);
-  const ackRemainder = await this._waitForAck(1000); // was 1000ms
+  const ackRemainder = await this._waitForAck(1000);
 
   this._emitStatus(
     `Sensors ACK received. Bitmask 0x${sensors.toString(16).toUpperCase().padStart(6, '0')} applied.`
   );
-  return { sensors, ackRemainder };
+
+  // ✅ Automatically trigger inquiry to rebuild schema and detect active sensors
+  try {
+    this._emitStatus('Performing automatic inquiry to refresh schema…');
+    const info = await this.inquiry();
+    this.enabledSensors = info.schema.enabledSensors;
+    this._emitStatus(`Inquiry complete. Enabled sensors: 0x${this.enabledSensors.toString(16).toUpperCase()}`);
+  } catch (err) {
+    this._emitStatus(`Inquiry after setSensors failed: ${err.message}`);
+  }
+
+  return { sensors, ackRemainder, enabledSensors: this.enabledSensors };
 }
+
 
 
 
