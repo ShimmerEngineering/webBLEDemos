@@ -302,13 +302,20 @@ async setSensors(sensors) {
     this._emitStatus('START_STREAM ACK received; frames should follow');
   }
 
-  async stopStreaming(){
-    this._emitStatus('STOP_STREAM → waiting for ACK…');
+async stopStreaming() {
+  this._emitStatus('STOP_STREAM → sending (no ACK wait)…');
+  
+  try {
     await this._write(new Uint8Array([OPCODES.STOP_STREAM]));
-    const remainder = await this._waitForAck(1000);
-    if (remainder && remainder.length){ this._log('Unexpected data after STOP_STREAM ACK (appending to buffer):', remainder); this._rxBuf = concatU8(this._rxBuf, remainder); }
-    this._emitStatus('STOP_STREAM ACK received; streaming stopped.');
+    this._emitStatus('STOP_STREAM command sent (skipped ACK wait).');
+  } catch (err) {
+    this._emitStatus(`STOP_STREAM write failed: ${err.message}`);
   }
+
+  // Optional: flush buffer or mark schema inactive
+  this._rxBuf = new Uint8Array(0);
+  this._emitStatus('Streaming stopped (ACK skipped for latency tolerance).');
+}
 
   // ---- Inquiry decode → schema ----
 // ✅ Best-practice version of `_interpretInquiryResponseShimmer3R()` and `_buildSchema()`
