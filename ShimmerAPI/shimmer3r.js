@@ -88,7 +88,11 @@ export class Shimmer3RClient {
 
     // Stash for ACK+RSP in same notify
     this._lastAckRemainder = null; // Uint8Array | null
-	this.enabledSensors = 0x000000; // store 24-bit bitmask
+    this.enabledSensors = 0x000000; // store 24-bit bitmask
+
+    // NEW: ACK expectation counter and streaming state
+    this._expectingAck = 0;
+    this._streaming = false;
   }
 
   _log(...a){ if(this.debug) console.log('[Shimmer3R]', ...a); }
@@ -110,131 +114,148 @@ export class Shimmer3RClient {
   }
 
   async disconnect(){
-    try{ if(this.tx){ try{await this.tx.stopNotifications();}catch{} this.tx.removeEventListener('characteristicvaluechanged', this._handleNotify);} if(this.device?.gatt?.connected) this.device.gatt.disconnect(); }
-    finally{ this.device=this.server=this.rx=this.tx=null; this._rxBuf=new Uint8Array(0); this.schema=null; this._emitStatus('Disconnected'); }
+    try{
+      if(this.tx){
+        try{await this.tx.stopNotifications();}catch{}
+        this.tx.removeEventListener('characteristicvaluechanged', this._handleNotify);
+      }
+      if(this.device?.gatt?.connected) this.device.gatt.disconnect();
+    } finally {
+      this.device=this.server=this.rx=this.tx=null;
+      this._rxBuf=new Uint8Array(0);
+      this.schema=null;
+      this._streaming=false;
+      this._emitStatus('Disconnected');
+    }
   }
 
-_handleNotify = (evt) => {
-  const chunk = new Uint8Array(evt.target.value.buffer);
-  this._log('Notify len=', chunk.length, 'data=', chunk);
+  _handleNotify = (evt) => {
+    const chunk = new Uint8Array(evt.target.value.buffer);
+    this._log('Notify len=', chunk.length, 'data=', chunk);
 
-  // ACK (may include response remainder)
-  if (chunk.length >= 1 && chunk[0] === OPCODES.ACK) {
-    this._log('ACK detected at start of notify');
-    const remainder = chunk.slice(1);
-    this._lastAckRemainder = remainder.length ? remainder : null;
-    this._emitTemp(new Uint8Array([OPCODES.ACK]));          // wake ACK waiters
-    if (this._lastAckRemainder) {                           // forward remainder
-      this._log('Forwarding remainder after ACK', this._lastAckRemainder);
-      this._emitTemp(this._lastAckRemainder);
-    }
-    if (this._lastAckRemainder && this.schema) {            // parse if stream bytes
-      this._rxBuf = concatU8(this._rxBuf, this._lastAckRemainder);
-    }
-    return; // IMPORTANT: stop here for ACK path
-  }
+    // 1) ACK handling only if we are actually expecting an ACK
+    if (chunk.length >= 1 && chunk[0] === OPCODES.ACK && (this._expectingAck ?? 0) > 0) {
+      this._log('ACK detected at start of notify (expected)');
+      // consume one outstanding ACK expectation
+      this._expectingAck = Math.max(0, (this._expectingAck || 0) - 1);
 
-  // DATA packet(s) — DO NOT strip; parser expects per-frame 0x00
-  if (chunk.length >= 1 && chunk[0] === OPCODES.DATA) {
-    if (this.forceTimestampFmt === 'u24' && chunk.length >= 4) {
-      const tsPreview = u24le(chunk, 1);
-      this._log(`DATA notify → len=${chunk.length} (ts24 preview=${tsPreview})`);
+      // remainder may be control-plane or stream bytes
+      const remainder = chunk.slice(1);
+      this._lastAckRemainder = remainder.length ? remainder : null;
+
+      // wake ACK waiters
+      this._emitTemp(new Uint8Array([OPCODES.ACK]));
+
+      // If streaming, only append remainder to stream if it *clearly* starts with DATA preamble
+      if (this._lastAckRemainder) {
+        if (this._streaming && this._lastAckRemainder[0] === OPCODES.DATA) {
+          this._log('Appending DATA remainder after ACK to stream buffer');
+          this._rxBuf = concatU8(this._rxBuf, this._lastAckRemainder);
+        } else {
+          // forward to control-plane waiters
+          this._log('Forwarding non-DATA remainder to control handlers');
+          this._emitTemp(this._lastAckRemainder);
+        }
+        this._lastAckRemainder = null;
+      }
+      // Don't parse here; let normal flow continue on next notify
+      return;
+    }
+
+    // 2) During streaming, *all* bytes (including 0xFF heads) are data-plane
+    if (this._streaming) {
+      this._rxBuf = concatU8(this._rxBuf, chunk);
     } else {
-      this._log(`DATA notify → len=${chunk.length}`);
+      // Non-streaming → emit to temp listeners (e.g., responses)
+      this._emitTemp(chunk);
+      // If we already built schema and non-streaming bytes were actually DATA
+      // (rare race), keep them as well to avoid losing frames.
+      if (chunk.length && chunk[0] === OPCODES.DATA) {
+        this._rxBuf = concatU8(this._rxBuf, chunk);
+      }
     }
-    this._rxBuf = concatU8(this._rxBuf, chunk);  // keep 0x00 preambles
-  } else {
-    // Plain response or raw bytes
-    this._emitTemp(chunk);
-    this._rxBuf = concatU8(this._rxBuf, chunk);
+
+    // 3) Try parsing if we have a schema
+    if (this.schema) {
+      try { this._parseBySchema(); }
+      catch (e) { this._log('parseBySchema error:', e); }
+    }
+  };
+
+  /**
+   * Control the internal expansion power (enable/disable)
+   * C# equivalent:
+   *   WriteBytes([0x5E, expPower], 0, 2)
+   * @param {number} expPower - 0 = disable, 1 = enable
+   */
+  async setInternalExpPower(expPower) {
+    if (!Number.isInteger(expPower) || expPower < 0 || expPower > 1) {
+      throw new Error('expPower must be 0 (off) or 1 (on)');
+    }
+    if (!this.rx) throw new Error('Not connected (RX missing)');
+
+    const cmd = new Uint8Array([
+      OPCODES.SET_INTERNAL_EXP_POWER_ENABLE_CMD,
+      expPower & 0xFF,
+    ]);
+
+    this._emitStatus(
+      `SET_INTERNAL_EXP_POWER_ENABLE_CMD → ${expPower ? 'ON' : 'OFF'} waiting for ACK…`
+    );
+
+    const ackRemainder = await this._writeExpectingAck(cmd, 1500);
+
+    this._emitStatus(
+      `Expansion power ${expPower ? 'enabled' : 'disabled'} (ACK received).`
+    );
+    return { expPower, ackRemainder };
   }
 
-  // Try parsing if we have a schema
-  if (this.schema) {
-    try { this._parseBySchema(); }
-    catch (e) { this._log('parseBySchema error:', e); }
-  }
-};
-
-/**
- * Control the internal expansion power (enable/disable)
- * C# equivalent:
- *   WriteBytes([0x5E, expPower], 0, 2)
- * @param {number} expPower - 0 = disable, 1 = enable
- */
-async setInternalExpPower(expPower) {
-  if (!Number.isInteger(expPower) || expPower < 0 || expPower > 1) {
-    throw new Error('expPower must be 0 (off) or 1 (on)');
-  }
-  if (!this.rx) throw new Error('Not connected (RX missing)');
-
-  const cmd = new Uint8Array([
-    OPCODES.SET_INTERNAL_EXP_POWER_ENABLE_CMD,
-    expPower & 0xFF,
-  ]);
-
-  this._emitStatus(
-    `SET_INTERNAL_EXP_POWER_ENABLE_CMD → ${expPower ? 'ON' : 'OFF'} waiting for ACK…`
-  );
-
-  await this._write(cmd);
-  const ackRemainder = await this._waitForAck(1000);
-
-  this._emitStatus(
-    `Expansion power ${expPower ? 'enabled' : 'disabled'} (ACK received).`
-  );
-  return { expPower, ackRemainder };
-}
-
-getEnabledSensors() {
-  return this.enabledSensors;
-}
-
-/**
- * Enable sensors via a 24-bit bitmask.
- * Flow: write → wait for ACK → automatically perform Inquiry to refresh schema.
- * @param {number} sensors - 24-bit bitmask of sensors to enable (0–0xFFFFFF).
- */
-async setSensors(sensors) {
-  if (!Number.isFinite(sensors)) {
-    throw new Error('Sensors must be a finite number');
-  }
-  if (!this.rx) throw new Error('Not connected (RX missing)');
-
-  // Coerce to uint32 then clamp to 24 bits
-  sensors = (sensors >>> 0) & 0xFFFFFF;
-
-  const b1 = sensors & 0xFF;
-  const b2 = (sensors >>> 8) & 0xFF;
-  const b3 = (sensors >>> 16) & 0xFF;
-  const cmd = new Uint8Array([OPCODES.SET_SENSORS_CMD, b1, b2, b3]);
-
-  this._emitStatus(
-    `SET_SENSORS_CMD → bitmask=0x${sensors.toString(16).toUpperCase().padStart(6, '0')} waiting for ACK…`
-  );
-
-  await this._write(cmd);
-  const ackRemainder = await this._waitForAck(1000);
-
-  this._emitStatus(
-    `Sensors ACK received. Bitmask 0x${sensors.toString(16).toUpperCase().padStart(6, '0')} applied.`
-  );
-
-  // ✅ Automatically trigger inquiry to rebuild schema and detect active sensors
-  try {
-    this._emitStatus('Performing automatic inquiry to refresh schema…');
-    const info = await this.inquiry();
-    this.enabledSensors = info.schema.enabledSensors;
-    this._emitStatus(`Inquiry complete. Enabled sensors: 0x${this.enabledSensors.toString(16).toUpperCase()}`);
-  } catch (err) {
-    this._emitStatus(`Inquiry after setSensors failed: ${err.message}`);
+  getEnabledSensors() {
+    return this.enabledSensors;
   }
 
-  return { sensors, ackRemainder, enabledSensors: this.enabledSensors };
-}
+  /**
+   * Enable sensors via a 24-bit bitmask.
+   * Flow: write → wait for ACK → automatically perform Inquiry to refresh schema.
+   * @param {number} sensors - 24-bit bitmask of sensors to enable (0–0xFFFFFF).
+   */
+  async setSensors(sensors) {
+    if (!Number.isFinite(sensors)) {
+      throw new Error('Sensors must be a finite number');
+    }
+    if (!this.rx) throw new Error('Not connected (RX missing)');
 
+    // Coerce to uint32 then clamp to 24 bits
+    sensors = (sensors >>> 0) & 0xFFFFFF;
 
+    const b1 = sensors & 0xFF;
+    const b2 = (sensors >>> 8) & 0xFF;
+    const b3 = (sensors >>> 16) & 0xFF;
+    const cmd = new Uint8Array([OPCODES.SET_SENSORS_CMD, b1, b2, b3]);
 
+    this._emitStatus(
+      `SET_SENSORS_CMD → bitmask=0x${sensors.toString(16).toUpperCase().padStart(6, '0')} waiting for ACK…`
+    );
+
+    const ackRemainder = await this._writeExpectingAck(cmd, 1500);
+
+    this._emitStatus(
+      `Sensors ACK received. Bitmask 0x${sensors.toString(16).toUpperCase().padStart(6, '0')} applied.`
+    );
+
+    // ✅ Automatically trigger inquiry to rebuild schema and detect active sensors
+    try {
+      this._emitStatus('Performing automatic inquiry to refresh schema…');
+      const info = await this.inquiry();
+      this.enabledSensors = info.schema.enabledSensors;
+      this._emitStatus(`Inquiry complete. Enabled sensors: 0x${this.enabledSensors.toString(16).toUpperCase()}`);
+    } catch (err) {
+      this._emitStatus(`Inquiry after setSensors failed: ${err.message}`);
+    }
+
+    return { sensors, ackRemainder, enabledSensors: this.enabledSensors };
+  }
 
   /**
    * Set device sampling rate in Hz.
@@ -259,15 +280,11 @@ async setSensors(sensors) {
     const cmd = new Uint8Array([OPCODES.SAMPLING_RATE, lsb, msb]);
 
     this._emitStatus(`Set sampling rate → ${rateHz.toFixed(3)} Hz (divisor=${divisor}) — waiting for ACK…`);
-    await this._write(cmd);
 
-    // Your existing ACK waiter resolves when it sees 0xFF; it also stashes any remainder.
-    const ackRemainder = await this._waitForAck(1000);
+    const ackRemainder = await this._writeExpectingAck(cmd, 1500);
 
     // Compute the *applied* Hz from what we actually sent
     const appliedHz = 32768 / divisor;
-
-    // (Optional) if firmware echoes status in ackRemainder, you can parse it here.
 
     // Update any cached sampling info from Inquiry (purely informational)
     this.lastSamplingDivisor = divisor;
@@ -280,14 +297,14 @@ async setSensors(sensors) {
   // ---- Commands (ACK then response) ----
   async inquiry(){
     this._emitStatus('INQUIRY_CMD → waiting for ACK then RSP…');
-    await this._write(new Uint8Array([OPCODES.INQUIRY_CMD]));
-    const remainder = await this._waitForAck(1000); // may be null or a Uint8Array
+
+    const remainder = await this._writeExpectingAck(new Uint8Array([OPCODES.INQUIRY_CMD]), 1500);
     if (remainder && remainder[0] === OPCODES.INQUIRY_RSP){
       this._log('Using post-ACK remainder as response');
       const info = this._interpretInquiryResponseShimmer3R(remainder);
       this.onInquiry?.(info); return info;
     }
-    const rsp = await this._waitForResponse(OPCODES.INQUIRY_RSP, 1500);
+    const rsp = await this._waitForResponse(OPCODES.INQUIRY_RSP, 2000);
     this._emitStatus(`Inquiry RSP (${rsp.length} bytes)`);
     const info = this._interpretInquiryResponseShimmer3R(rsp);
     this.onInquiry?.(info); return info;
@@ -296,263 +313,287 @@ async setSensors(sensors) {
   async startStreaming(){
     if (!this.schema) this._emitStatus('Starting stream without schema (not recommended).');
     this._emitStatus('START_STREAM → waiting for ACK…');
-    await this._write(new Uint8Array([OPCODES.START_STREAM]));
-    const remainder = await this._waitForAck(1000);
-    if (remainder && remainder.length){ this._log('Unexpected data after START_STREAM ACK (appending to buffer):', remainder); this._rxBuf = concatU8(this._rxBuf, remainder); }
+
+    const remainder = await this._writeExpectingAck(new Uint8Array([OPCODES.START_STREAM]), 1500);
+
+    // Now streaming
+    this._streaming = true;
+
+    if (remainder && remainder.length){
+      if (remainder[0] === OPCODES.DATA) {
+        this._log('Unexpected DATA after START_STREAM ACK (appending to buffer)');
+        this._rxBuf = concatU8(this._rxBuf, remainder);
+      } else {
+        this._emitTemp(remainder); // non-DATA control-plane
+      }
+    }
     this._emitStatus('START_STREAM ACK received; frames should follow');
   }
 
-async stopStreaming() {
-  this._emitStatus('STOP_STREAM → sending (no ACK wait)…');
-  
-  try {
-    await this._write(new Uint8Array([OPCODES.STOP_STREAM]));
-    this._emitStatus('STOP_STREAM command sent (skipped ACK wait).');
-  } catch (err) {
-    this._emitStatus(`STOP_STREAM write failed: ${err.message}`);
-  }
+  async stopStreaming() {
+    this._emitStatus('STOP_STREAM → sending (no ACK wait)…');
 
-  // Optional: flush buffer or mark schema inactive
-  this._rxBuf = new Uint8Array(0);
-  this._emitStatus('Streaming stopped (ACK skipped for latency tolerance).');
-}
+    try {
+      await this._write(new Uint8Array([OPCODES.STOP_STREAM]));
+      this._emitStatus('STOP_STREAM command sent (skipped ACK wait).');
+    } catch (err) {
+      this._emitStatus(`STOP_STREAM write failed: ${err.message}`);
+    }
+
+    this._streaming = false;         // stop treating notifies as data-plane
+    this._rxBuf = new Uint8Array(0); // optional flush
+    this._emitStatus('Streaming stopped (ACK skipped for latency tolerance).');
+  }
 
   // ---- Inquiry decode → schema ----
-// ✅ Best-practice version of `_interpretInquiryResponseShimmer3R()` and `_buildSchema()`
-// This approach mirrors the C# `InterpretDataPacketFormat()` logic more closely.
-// It returns a schema object that includes not only field info, but also enabledSensors and packetSize.
+  // ✅ Best-practice version of `_interpretInquiryResponseShimmer3R()` and `_buildSchema()`
+  // This approach mirrors the C# `InterpretDataPacketFormat()` logic more closely.
+  // It returns a schema object that includes not only field info, but also enabledSensors and packetSize.
 
-_interpretInquiryResponseShimmer3R(u8) {
-  let base = 0;
-  if (u8[0] === OPCODES.INQUIRY_RSP && u8.length >= 2) base = 1;
+  _interpretInquiryResponseShimmer3R(u8) {
+    let base = 0;
+    if (u8[0] === OPCODES.INQUIRY_RSP && u8.length >= 2) base = 1;
 
-  const adcRaw = u16le(u8, base + 0);
-  const samplingHz = 32768 / (adcRaw || 1);
+    const adcRaw = u16le(u8, base + 0);
+    const samplingHz = 32768 / (adcRaw || 1);
 
-  const numCh = u8[base + 9] ?? 0;
-  const bufSize = u8[base + 10] ?? 0;
-  const chStart = base + 11;
-  const chEnd = chStart + numCh;
-  const channelIds = [...u8.slice(chStart, chEnd)];
+    const numCh = u8[base + 9] ?? 0;
+    const bufSize = u8[base + 10] ?? 0;
+    const chStart = base + 11;
+    const chEnd = chStart + numCh;
+    const channelIds = [...u8.slice(chStart, chEnd)];
 
- 
-  // Build schema — fixed to 24-bit timestamp format
-  const tsFmt = 'u24'; // Always use 24-bit timestamp
-  const schema = this._buildSchemaFromChannels(channelIds, tsFmt);
+    // Build schema — fixed to 24-bit timestamp format
+    const tsFmt = 'u24'; // Always use 24-bit timestamp
+    const schema = this._buildSchemaFromChannels(channelIds, tsFmt);
 
-  this.schema = schema;
-  this._log(
-    `Schema built: timestampFmt=${schema.timestampFmt}, fields=${schema.fields.length}, enabledSensors=0x${schema.enabledSensors.toString(16)}`
-  );
+    this.schema = schema;
+    this._log(
+      `Schema built: timestampFmt=${schema.timestampFmt}, fields=${schema.fields.length}, enabledSensors=0x${schema.enabledSensors.toString(16)}`
+    );
 
-  return {
-    opcode: u8[0],
-    adcRaw,
-    samplingHz,
-    numChannels: numCh,
-    bufferSize: bufSize,
-    channelIds,
-    schema,
-    bytes: u8.slice(0)
-  };
-}
-
-_buildSchemaFromChannels(channelIds, timestampFmt = 'u24') {
-  const fields = [];
-  const ts = timestampFmt === 'u24' ? TIMESTAMP_FIELD.u24 : TIMESTAMP_FIELD.u16;
-  let frameBytes = ts.sizeBytes;
-  let hasPacked12 = false;
-  let enabledSensors = 0;
-  let packetSize = ts.sizeBytes; // match C# logic
-
-  for (const id of channelIds) {
-    const fmt = CHANNEL_FORMATS[id];
-    if (!fmt) {
-      fields.push({ id, name: `CH_${hex2(id)}`, fmt: 'i16', endian: 'le', sizeBytes: 2 });
-      packetSize += 2;
-      continue;
-    }
-
-    fields.push({ id, ...fmt });
-    packetSize += fmt.sizeBytes || 2;
-
-    if (fmt.fmt === 'u12' || fmt.fmt === 'i12') hasPacked12 = true;
-
-    // Sensor bitmask logic — simplified Shimmer3R-only version
-    switch (id) {
-      case 0x00:
-      case 0x01:
-      case 0x02:
-        enabledSensors |= SensorBitmapShimmer3.SENSOR_A_ACCEL;
-        break;
-      case 0x04:
-      case 0x05:
-      case 0x06:
-        enabledSensors |= SensorBitmapShimmer3.SENSOR_D_ACCEL;
-        break;
-      case 0x07:
-      case 0x08:
-      case 0x09:
-        enabledSensors |= SensorBitmapShimmer3.SENSOR_MAG;
-        break;
-      case 0x0A:
-      case 0x0B:
-      case 0x0C:
-        enabledSensors |= SensorBitmapShimmer3.SENSOR_GYRO;
-        break;
-      case 0x12:
-        enabledSensors |= SensorBitmapShimmer3.SENSOR_PRESSURE;
-        break;
-      case 0x1D:
-      case 0x23:
-      case 0x24:
-        enabledSensors |= SensorBitmapShimmer3.SENSOR_EXG1_16BIT;
-        break;
-      case 0x25:
-      case 0x26:
-        enabledSensors |= SensorBitmapShimmer3.SENSOR_EXG2_16BIT;
-        break;
-      default:
-        console.warn(`⚠️ Unmapped channel ID 0x${id.toString(16)} — added as generic i16.`);
-    }
+    return {
+      opcode: u8[0],
+      adcRaw,
+      samplingHz,
+      numChannels: numCh,
+      bufferSize: bufSize,
+      channelIds,
+      schema,
+      bytes: u8.slice(0)
+    };
   }
-  
-  this.enabledSensors = enabledSensors;
 
-  return {
-    timestampFmt,
-    fields,
-    frameBytes: packetSize,
-    hasPacked12,
-    enabledSensors,
-    dataPreambleByte: 0x00
-  };
-}
+  _buildSchemaFromChannels(channelIds, timestampFmt = 'u24') {
+    const fields = [];
+    const ts = timestampFmt === 'u24' ? TIMESTAMP_FIELD.u24 : TIMESTAMP_FIELD.u16;
 
-  // ---- Streaming parser (unchanged logic, logs included) ----
+    // ✅ Include DATA preamble (0x00) in frame size for boundary check
+    let packetSize = 1 + ts.sizeBytes; // 1 = preamble 0x00
+    let hasPacked12 = false;
+    let enabledSensors = 0;
+
+    for (const id of channelIds) {
+      const fmt = CHANNEL_FORMATS[id];
+      if (!fmt) {
+        fields.push({ id, name: `CH_${hex2(id)}`, fmt: 'i16', endian: 'le', sizeBytes: 2 });
+        packetSize += 2;
+        continue;
+      }
+
+      fields.push({ id, ...fmt });
+      packetSize += fmt.sizeBytes || 2;
+
+      if (fmt.fmt === 'u12' || fmt.fmt === 'i12') hasPacked12 = true;
+
+      // Minimal sensor bitmask mapping (extend as needed)
+      switch (id) {
+        case 0x00: case 0x01: case 0x02:
+          enabledSensors |= SensorBitmapShimmer3.SENSOR_A_ACCEL; break;
+        case 0x04: case 0x05: case 0x06:
+          enabledSensors |= SensorBitmapShimmer3.SENSOR_D_ACCEL; break;
+        case 0x07: case 0x08: case 0x09:
+          enabledSensors |= SensorBitmapShimmer3.SENSOR_MAG; break;
+        case 0x0A: case 0x0B: case 0x0C:
+          enabledSensors |= SensorBitmapShimmer3.SENSOR_GYRO; break;
+        case 0x12:
+          enabledSensors |= SensorBitmapShimmer3.SENSOR_PRESSURE; break;
+        case 0x1D: case 0x23: case 0x24:
+          enabledSensors |= SensorBitmapShimmer3.SENSOR_EXG1_16BIT; break;
+        case 0x25: case 0x26:
+          enabledSensors |= SensorBitmapShimmer3.SENSOR_EXG2_16BIT; break;
+        default:
+          console.warn(`⚠️ Unmapped channel ID 0x${id.toString(16)} — added as generic i16.`);
+      }
+    }
+
+    this.enabledSensors = enabledSensors;
+
+    return {
+      timestampFmt,
+      fields,
+      frameBytes: packetSize,          // ✅ inclusive of preamble
+      hasPacked12,
+      enabledSensors,
+      dataPreambleByte: 0x00
+    };
+  }
+
   _parseBySchema() {
     const sch = this.schema;
     if (!sch) { this._log('parse: no schema set; skipping'); return; }
 
-    const buf = this._rxBuf;
-    let off = 0;
-    const needTs = sch.timestampFmt === 'u16' ? 2 : 3;
-    let frames = 0;
+    const preamble   = sch.dataPreambleByte ?? 0x00;  // 0x00 = DATA marker
+    const frameBytes = sch.frameBytes >>> 0;          // includes preamble + ts + fields
+    const tsBytes    = sch.timestampFmt === 'u16' ? 2 : 3;
+    const TS_MOD     = tsBytes === 3 ? 16777216 : 65536; // 2^24 or 2^16
 
-    this._log(`parse: start — bufferLen=${buf.length}, tsBytes=${needTs}, fields=${sch.fields?.length ?? 0}`);
+    let buf = this._rxBuf;
+    let frames = 0, drops = 0, anomalies = 0;
 
-    while (true) {
-	  const remaining = buf.length - off;
-	  // We need at least preamble(1) + timestamp bytes to proceed
-	  const preBytes = sch.dataPreambleByte != null ? 1 : 0;
-	  const needTs = sch.timestampFmt === 'u16' ? 2 : 3;
-	  if (remaining < preBytes + needTs) {
-		this._log(`parse: not enough bytes for preamble+timestamp: remaining=${remaining}, need=${preBytes + needTs}`);
-		break;
-	  }
+    if (this._lastTs === undefined || this._lastTs === null) this._lastTs = 0;
 
-	  let cursor = off;
-
-	  // --- NEW: per-frame preamble ---
-	  if (sch.dataPreambleByte != null) {
-		if (buf[cursor] !== sch.dataPreambleByte) {
-		  // Soft resync: scan ahead for the next 0x00 that leaves enough room for a whole frame
-		  const next = buf.indexOf(sch.dataPreambleByte, cursor + 1);
-		  if (next === -1 || (buf.length - next) < (1 + needTs)) {
-			this._log(`parse: preamble missing; waiting for more (remain=${remaining})`);
-			break;
-		  }
-		  this._log(`parse: resync → skipping ${next - cursor} stray byte(s)`);
-		  off = next;      // drop stray bytes
-		  continue;        // try again at the found preamble
-		}
-		cursor += 1; // consume 0x00 preamble
-	  }
-	  // -------------------------------
-
-	  const oc = new ObjectCluster(this.device?.name || 'Shimmer3R');
-
-	  // Timestamp
-	  let ts;
-	  if (sch.timestampFmt === 'u16') { ts = u16le(buf, cursor); cursor += 2; }
-	  else { ts = u24le(buf, cursor); cursor += 3; }
-	  oc.add('TIMESTAMP', ts);
-
-      // For packed 12-bit decoding
-      let twelveBuf = 0, twelveBits = 0;
-
-      let ok = true;
-      for (const f of sch.fields) {
-        const { fmt, endian } = f;
-        const before = cursor;
-
-        const need = (fmt === 'u8'  || fmt === 'i8')  ? 1 :
-                     (fmt === 'u16' || fmt === 'i16') ? 2 :
-                     (fmt === 'u24' || fmt === 'i24') ? 3 :
-                     (fmt === 'u12' || fmt === 'i12') ? null : 2; // fallback 2
-
-        if (need !== null && (buf.length - cursor) < need) {
-          this._log(`parse: incomplete field ${f.name} fmt=${fmt} need=${need} have=${buf.length - cursor}`);
-          ok = false; break;
+    // Need at least two full frames to assert boundary: [0x00 ...][0x00 ...]
+    while (buf.length >= frameBytes * 2) {
+      // Quick preamble test at current offset and next-frame offset
+      if (buf[0] === preamble && buf[frameBytes] === preamble) {
+        // --- Peek timestamps from frame #1 and frame #2 to validate boundary ---
+        let ts1, ts2;
+        try {
+          ts1 = (tsBytes === 2) ? u16le(buf, 1) : u24le(buf, 1);
+          ts2 = (tsBytes === 2) ? u16le(buf, frameBytes + 1) : u24le(buf, frameBytes + 1);
+        } catch {
+          // If peek fails, slide one byte and retry
+          buf = buf.subarray(1);
+          drops++;
+          continue;
         }
 
-        let v;
-        if (fmt === 'u8' || fmt === 'i8') {
-          v = buf[cursor++];
-          if (fmt === 'i8') v = (v << 24) >> 24;
-        } else if (fmt === 'u16' || fmt === 'i16') {
-          v = (endian === 'le') ? u16le(buf, cursor) : u16be(buf, cursor);
-          cursor += 2;
-          if (fmt === 'i16') v = sign16(v);
-        } else if (fmt === 'u24' || fmt === 'i24') {
-          v = (endian === 'le') ? u24le(buf, cursor) : u24be(buf, cursor);
-          cursor += 3;
-          if (fmt === 'i24') v = sign24(v);
-        } else if (fmt === 'u12' || fmt === 'i12') {
-          while (twelveBits < 12) {
-            if ((buf.length - cursor) < 1) { this._log('parse: need more for 12-bit packed'); ok = false; break; }
-            twelveBuf |= (buf[cursor++] << twelveBits);
-            twelveBits += 8;
+        // Monotonic check modulo TS range: dt must be > 0 (allow wrap)
+        const dt = ( (ts2 - ts1) % TS_MOD + TS_MOD ) % TS_MOD;
+        if (dt === 0) {
+          // False boundary (duplicate ts or corruption) → slide one byte
+          buf = buf.subarray(1);
+          drops++;
+          continue;
+        }
+
+        // --- Decode *one* frame now that boundary is plausible ---
+        const frame = buf.subarray(0, frameBytes);
+
+        try {
+          let cursor = 1; // skip preamble
+
+          const oc = new ObjectCluster(this.device?.name || 'Shimmer3R');
+
+          // Timestamp
+          let ts;
+          if (tsBytes === 2) { ts = u16le(frame, cursor); cursor += 2; }
+          else { ts = u24le(frame, cursor); cursor += 3; }
+          oc.add('TIMESTAMP', ts);
+
+          // Fields
+          for (const f of sch.fields) {
+            if (cursor + f.sizeBytes > frame.length) {
+              throw new Error(`short frame: need ${f.sizeBytes} @${cursor}, have ${frame.length}`);
+            }
+            let v;
+            switch (f.fmt) {
+              case 'i16': v = sign16(u16le(frame, cursor)); break;
+              case 'u16': v = u16le(frame, cursor); break;
+              case 'i24': v = sign24(u24le(frame, cursor)); break;
+              case 'u24': v = u24le(frame, cursor); break;
+              case 'u8':  v = frame[cursor]; break;
+              default:    v = u16le(frame, cursor); // fallback
+            }
+            cursor += f.sizeBytes;
+            oc.add(f.name, v);
           }
-          if (!ok) break;
-          v = twelveBuf & 0xFFF;
-          twelveBuf >>>= 12;
-          twelveBits -= 12;
-          if (fmt === 'i12' && (v & 0x800)) v |= 0xFFFFF000; // sign-extend
-        } else {
-          v = u16le(buf, cursor); cursor += 2;
-        }
 
-        if (frames < 3) this._log(`parse: field ${f.name} fmt=${fmt} bytes=${cursor - before} value=${v}`);
-        oc.add(f.name, v);
+          // Optional: anomaly log against lastTs (purely diagnostic)
+          if (this._lastTs) {
+            const dLast = ( (ts - this._lastTs) % TS_MOD + TS_MOD ) % TS_MOD;
+            if (dLast === 0) {
+              anomalies++;
+              this._log(`⚠️ Timestamp anomaly#${anomalies}: ts=${ts}, last=${this._lastTs}, Δ=0, frameLen=${frame.length}`);
+            }
+          }
+          this._lastTs = ts;
+
+          // Emit and consume one frame
+          this.onStreamFrame?.(oc);
+          frames++;
+          buf = buf.subarray(frameBytes);
+          continue;
+        } catch (e) {
+          // If field decode failed despite boundary check, drop 1 byte to resync
+          this._log('⚠️ frame decode error → sliding 1 byte', e.message);
+          buf = buf.subarray(1);
+          drops++;
+          continue;
+        }
       }
 
-      if (!ok) break; // wait for more data
-
-      oc.raw = buf.slice(off, cursor);
-      frames++;
-      if (frames <= 3 || frames % 50 === 0) this._log(`parse: frame#${frames} bytes=${cursor - off} ts=${ts}`);
-      this.onStreamFrame?.(oc);
-      off = cursor;
+      // ❌ Not aligned: drop 1 byte and retry
+      buf = buf.subarray(1);
+      drops++;
+      if (this.debug && drops % 64 === 1) {
+        this._log(`resync: dropped ${drops} byte(s) so far; bufLen=${buf.length}`);
+      }
     }
 
-    this._log(`parse: consumed=${off} leftover=${buf.length - off}`);
-    this._rxBuf = buf.slice(off);
+    // Keep remainder for next notify (may be < 2 frames or partial)
+    this._rxBuf = buf;
+
+    // If we dropped a lot, reset lastTs so future monotonic checks don’t spam
+    if (drops && drops % 512 === 0) this._lastTs = 0;
+
+    if (this.debug && (frames || drops)) {
+      this._log(`parse: frames=${frames}, drops=${drops}, leftover=${this._rxBuf.length}`);
+    }
   }
 
   // ---- Low-level helpers ----
-  async _write(u8){ if(!this.rx) throw new Error('Not connected (RX missing)'); this._log('Write', u8); await this.rx.writeValue(u8); }
+  async _write(u8){
+    if(!this.rx) throw new Error('Not connected (RX missing)');
+    this._log('Write', u8);
+    await this.rx.writeValue(u8);
+  }
+
+  // NEW: helper that increments ACK expectation, writes, and waits
+  async _writeExpectingAck(u8, ackTimeoutMs = 1000) {
+    this._expectingAck++;
+    try {
+      await this._write(u8);
+      const rem = await this._waitForAck(ackTimeoutMs);
+      return rem; // may be null or a Uint8Array (remainder)
+    } catch (e) {
+      this._expectingAck = Math.max(0, this._expectingAck - 1);
+      throw e;
+    }
+  }
 
   _waitForAck(timeoutMs=1000){
     return new Promise((resolve, reject)=>{
       const t = setTimeout(()=>{ this.offTemp(handler); reject(new Error('ACK timeout')); }, timeoutMs);
       const handler = (chunk)=>{
         if (!chunk||chunk.length===0) return;
+
+        // pure ACK
         if (chunk.length===1 && chunk[0]===OPCODES.ACK){
           clearTimeout(t); this.offTemp(handler);
           const rem = this._lastAckRemainder; this._lastAckRemainder=null;
           this._log('ACK observed', rem?`(+ remainder len ${rem.length})`:'');
           resolve(rem||null);
+          return;
+        }
+
+        // concatenated ACK + remainder that got emitted directly to temp listeners
+        if (chunk[0] === OPCODES.ACK && chunk.length > 1) {
+          clearTimeout(t); this.offTemp(handler);
+          const rem = chunk.slice(1);
+          this._log('ACK observed (inline) (+ remainder len', rem.length, ')');
+          resolve(rem);
         }
       };
       this.onTemp(handler);
@@ -567,7 +608,8 @@ _buildSchemaFromChannels(channelIds, timestampFmt = 'u24') {
     return new Promise((resolve, reject)=>{
       const t = setTimeout(()=>{ this.offTemp(handler); reject(new Error('Response timeout')); }, timeoutMs);
       const handler = (chunk)=>{
-        if (!chunk||chunk.length===0) return; if (chunk.length===1 && chunk[0]===OPCODES.ACK) return;
+        if (!chunk||chunk.length===0) return;
+        if (chunk.length===1 && chunk[0]===OPCODES.ACK) return;
         if (chunk[0]===expectedOpcode){ clearTimeout(t); this.offTemp(handler); resolve(chunk); }
       };
       this.onTemp(handler);
