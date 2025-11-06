@@ -186,7 +186,7 @@ client.onStreamFrame = (oc) => {
       await client.setSamplingRate(256);
       await sleep(200);
       // Sensor bitmask (matches your [0x08, 0x00, 0x00, 0x10]) → 0x00100000
-      await client.setSensors(SensorBitmapShimmer3.SENSOR_EXG1_16BIT | SensorBitmapShimmer3.SENSOR_EXG2_16BIT);
+      await client.enableEMG16Bit();
       await sleep(200);
       // Optional: Inquiry to build schema (channels, timestamp width, etc.)
       await client.inquiry();

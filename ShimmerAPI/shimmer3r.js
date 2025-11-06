@@ -316,7 +316,41 @@ export class Shimmer3RClient {
     const info = this._interpretInquiryResponseShimmer3R(rsp);
     this.onInquiry?.(info); return info;
   }
+  /**
+   * Enable EMG (ADS1292R) in 16-bit mode on EXG1 & EXG2.
+   * - Powers the internal expansion rail
+   * - Writes the provided EXG1/EXG2 config pages
+   * - Enables SENSOR_EXG1_16BIT and SENSOR_EXG2_16BIT via setSensors()
+   * - Refreshes schema via inquiry()
+   */
+  async enableEMG16Bit() {
+    if (!this.rx) throw new Error('Not connected (RX missing)');
 
+    // 1) Ensure expansion power is ON (ACK-aware helper already exists)
+    await this.setInternalExpPower(1);
+
+    // 2) Program ADS1292R pages (EXG1 then EXG2)
+    //    These are the exact frames you provided.
+    const writeEXG1Command = new Uint8Array([0x61, 0x00, 0x00, 0x0A, 0x02, 0xA8, 0x10, 0x69, 0x60, 0x20, 0x00, 0x00, 0x02, 0x03]);
+    const writeEXG2Command = new Uint8Array([0x61, 0x01, 0x00, 0x0A, 0x02, 0xA0, 0x10, 0xE1, 0xE1, 0x00, 0x00, 0x00, 0x02, 0x01]);
+
+    // Many firmwares ACK 0x61, but since that can vary, we do a plain write + short sleep.
+    await this._write(writeEXG1Command);
+    await new Promise(r => setTimeout(r, 200));
+    await this._write(writeEXG2Command);
+    await new Promise(r => setTimeout(r, 50));
+
+    // 3) Enable EXG1/EXG2 (16-bit) sensors in the 24-bit bitmap and apply
+    const targetBits =
+      (SensorBitmapShimmer3.SENSOR_EXG1_16BIT |
+       SensorBitmapShimmer3.SENSOR_EXG2_16BIT) >>> 0;
+
+    const newMask = ((this.enabledSensors >>> 0) | targetBits) & 0xFFFFFF;
+    await this.setSensors(newMask);   // this already does an inquiry() to rebuild schema
+
+    this._emitStatus('EMG 16-bit enabled on EXG1 & EXG2. Schema updated.');
+  }
+  
   async startStreaming(){
     if (!this.schema) this._emitStatus('Starting stream without schema (not recommended).');
     this._emitStatus('START_STREAM → waiting for ACK…');
