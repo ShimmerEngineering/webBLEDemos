@@ -65,8 +65,15 @@ const CHANNEL_FORMATS = {
   0x08: { name: 'MAG_Y', fmt: 'i16', endian: 'le', sizeBytes: 2 },
   0x09: { name: 'MAG_Z', fmt: 'i16', endian: 'le', sizeBytes: 2 },
   0x1D: { name: 'Exg1_Status', fmt: 'u8', endian: 'le', sizeBytes: 1 },
+  0x20: { name: 'Exg2_Status', fmt: 'u8', endian: 'le', sizeBytes: 1 },
+  0x1E: { name: 'Exg1_CH1_24Bit', fmt: 'i24', endian: 'be', sizeBytes: 3 },
+  0x1F: { name: 'Exg1_CH2_24Bit', fmt: 'i24', endian: 'be', sizeBytes: 3 },
+  0x21: { name: 'Exg2_CH1_24Bit', fmt: 'i24', endian: 'be', sizeBytes: 3 },
+  0x22: { name: 'Exg2_CH2_24Bit', fmt: 'i24', endian: 'be', sizeBytes: 3 },
   0x23: { name: 'Exg1_CH1_16Bit', fmt: 'i16', endian: 'be', sizeBytes: 2 },
   0x24: { name: 'Exg1_CH2_16Bit', fmt: 'i16', endian: 'be', sizeBytes: 2 },
+  0x25: { name: 'Exg2_CH1_16Bit', fmt: 'i16', endian: 'be', sizeBytes: 2 },
+  0x26: { name: 'Exg2_CH2_16Bit', fmt: 'i16', endian: 'be', sizeBytes: 2 },
   0x12: { name: 'PPG', fmt: 'i16', endian: 'le', sizeBytes: 2 }
 };
 
@@ -417,13 +424,17 @@ export class Shimmer3RClient {
         case 0x0A: case 0x0B: case 0x0C:
           enabledSensors |= SensorBitmapShimmer3.SENSOR_GYRO; break;
         case 0x12:
-          enabledSensors |= SensorBitmapShimmer3.SENSOR_PRESSURE; break;
-        case 0x1D: case 0x23: case 0x24:
+          enabledSensors |= SensorBitmapShimmer3.SENSOR_INT_A1; break;
+        case 0x23: case 0x24:
           enabledSensors |= SensorBitmapShimmer3.SENSOR_EXG1_16BIT; break;
         case 0x25: case 0x26:
           enabledSensors |= SensorBitmapShimmer3.SENSOR_EXG2_16BIT; break;
-        default:
-          console.warn(`⚠️ Unmapped channel ID 0x${id.toString(16)} — added as generic i16.`);
+        case 0x1E: case 0x1F:
+          enabledSensors |= SensorBitmapShimmer3.SENSOR_EXG1_24BIT; break;
+        case 0x21: case 0x22:
+         enabledSensors |= SensorBitmapShimmer3.SENSOR_EXG2_24BIT; break;
+		default:
+         console.warn(`⚠️ Unmapped channel ID 0x${id.toString(16)} — added as generic i16.`);
       }
     }
 
@@ -499,10 +510,18 @@ export class Shimmer3RClient {
             }
             let v;
             switch (f.fmt) {
-              case 'i16': v = sign16(u16le(frame, cursor)); break;
-              case 'u16': v = u16le(frame, cursor); break;
-              case 'i24': v = sign24(u24le(frame, cursor)); break;
-              case 'u24': v = u24le(frame, cursor); break;
+			  case 'i16':
+				v = f.endian === 'be' ? sign16(u16be(frame, cursor)) : sign16(u16le(frame, cursor));
+				break;
+			  case 'u16':
+				v = f.endian === 'be' ? u16be(frame, cursor) : u16le(frame, cursor);
+				break;
+     		  case 'i24':
+				v = f.endian === 'be' ? sign24(u24be(frame, cursor)) : sign24(u24le(frame, cursor));
+				break;
+			  case 'u24':
+				v = f.endian === 'be' ? u24be(frame, cursor) : u24le(frame, cursor);
+				break;				
               case 'u8':  v = frame[cursor]; break;
               default:    v = u16le(frame, cursor); // fallback
             }

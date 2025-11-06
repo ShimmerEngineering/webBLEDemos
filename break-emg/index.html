@@ -93,7 +93,7 @@
 <!-- Core logic and game   -->
 <!-- ===================== -->
 <script type="module">
-  import { Shimmer3RClient } from '../ShimmerAPI/shimmer3r.js';
+  import { Shimmer3RClient,SensorBitmapShimmer3  } from '../ShimmerAPI/shimmer3r.js';
 
   // ===== Game buffers and globals (unchanged) =====
   const emg1Buffer = new Array(256*5).fill(0);
@@ -187,7 +187,7 @@ client.onStreamFrame = (oc) => {
       await client.setSamplingRate(256);
       await sleep(200);
       // Sensor bitmask (matches your [0x08, 0x00, 0x00, 0x10]) → 0x00100000
-      await client.setSensors(0x00100000);
+      await client.setSensors(SensorBitmapShimmer3.SENSOR_EXG1_16BIT | SensorBitmapShimmer3.SENSOR_EXG2_16BIT);
       await sleep(200);
       // Optional: Inquiry to build schema (channels, timestamp width, etc.)
       await client.inquiry();
