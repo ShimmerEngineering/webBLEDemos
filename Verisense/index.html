@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <title>Verisense Sync – Debug + Payload Index</title>
   <style>
-    body { font-family: Arial; padding: 20px; }
+    body { font-family: Arial, sans-serif; padding: 20px; }
     button { padding: 10px 20px; margin: 8px; }
     pre { background: #111; color: #0f0; padding: 10px; height: 350px; overflow-y: auto; font-size: 14px; }
     #progressBox { background:#333; width:100%; height:20px; border-radius:4px; overflow:hidden; margin-top:10px; }
@@ -17,7 +17,7 @@
 
 <button id="connectBtn">Connect</button>
 <button id="syncBtn" disabled>Start Sync</button>
-<button id="stopBtn" disabled>Stop & Save BIN</button>
+<button id="stopBtn" disabled>Stop &amp; Save BIN</button>
 
 <div id="progressBox"><div id="progressFill"></div></div>
 <p><b>Total Bytes:</b> <span id="byteCount">0</span></p>
@@ -32,6 +32,7 @@ const DATA_HEADER       = 0x32;                 // Logged data message
 const DATA_END_HEADER   = 0x42;                 // End-of-sync marker
 const READ_DATA_REQUEST = new Uint8Array([0x12, 0x00, 0x00]);
 const DATA_ACK          = new Uint8Array([0x82, 0x00, 0x00]);
+const DATA_NACK         = new Uint8Array([0x72, 0x00, 0x00]); // matches C# dataNACK
 
 /* ---------------------------------------------------------
    GLOBALS
@@ -47,9 +48,24 @@ let currentMsg = null;
 
 let lastTs = performance.now();
 
+/* State machine / watchdog */
+let lastRxTime = performance.now();
+const ReplyType = {
+  NONE: 0,
+  ACK: 1,
+  NACK: 2
+};
+let lastReplySent = ReplyType.NONE;
+let watchdogId = null;
+
+/* For restart-on-done logic */
+let readRestartCount = 0;
+const MAX_READ_RESTARTS = 3;
+
 /* ---------------------------------------------------------
-   DEBUG
+   DEBUG (bounded)
 --------------------------------------------------------- */
+const MAX_LOG_LINES = 2000;
 function debug(msg) {
   const now = performance.now();
   const delta = (now - lastTs).toFixed(2);
@@ -57,12 +73,15 @@ function debug(msg) {
 
   const el = document.getElementById("log");
   el.textContent += `[+${delta}ms] ${msg}\n`;
+
+  // Trim log to last N lines to avoid DOM bloat
+  const lines = el.textContent.split("\n");
+  if (lines.length > MAX_LOG_LINES) {
+    el.textContent = lines.slice(lines.length - MAX_LOG_LINES).join("\n");
+  }
+
   el.scrollTop = el.scrollHeight;
 }
-
-/* ---------------------------------------------------------
-   MESSAGE PARSER
---------------------------------------------------------- */
 
 /* ---------------------------------------------------------
    THROUGHPUT
@@ -88,7 +107,82 @@ function reportThroughput(payloadLength) {
   );
 }
 
+/* ---------------------------------------------------------
+   ACK / NACK / REQUEST helpers
+--------------------------------------------------------- */
+function sendAck(payloadIndex) {
+  if (!writer) return;
+  writer.write(DATA_ACK).then(() => {
+    lastReplySent = ReplyType.ACK;
+    debug(`⬅ ACK sent for payloadIndex=${payloadIndex}`);
+  }).catch(err => {
+    debug(`❌ ACK send failed: ${err}`);
+  });
+}
+
+function sendNack() {
+  if (!writer) return;
+  writer.write(DATA_NACK).then(() => {
+    lastReplySent = ReplyType.NACK;
+    debug("⬅ NACK sent (watchdog)");
+  }).catch(err => {
+    debug(`❌ NACK send failed: ${err}`);
+  });
+}
+
+function sendReadDataRequest() {
+  if (!writer) return;
+  writer.write(READ_DATA_REQUEST).then(() => {
+    // In C# this corresponds to LastDataTransferReplySent = NONE
+    lastReplySent = ReplyType.NONE;
+    debug("➡ ReadDataRequest sent (watchdog or start)");
+  }).catch(err => {
+    debug(`❌ ReadDataRequest send failed: ${err}`);
+  });
+}
+
+/* ---------------------------------------------------------
+   WATCHDOG – C#-style ProcessDataTimeout equivalent
+--------------------------------------------------------- */
+function startWatchdog() {
+  if (watchdogId) clearInterval(watchdogId);
+
+  watchdogId = setInterval(() => {
+    if (!keepReading) return;
+
+    const now = performance.now();
+    const silenceMs = now - lastRxTime;
+
+    // If we've had no data for > 5 seconds, emulate ProcessDataTimeout
+    if (silenceMs > 1500) {
+      debug(`⚠️ No data for ${silenceMs.toFixed(0)} ms — watchdog timeout`);
+
+      if (lastReplySent === ReplyType.NONE) {
+        // C# case: LastDataTransferReplySent == NONE → resend ReadDataRequest
+        debug("⚠️ Watchdog: no prior ACK/NACK, resending ReadDataRequest");
+        sendReadDataRequest();
+      } else {
+        // Mid-sync stall → send NACK to request resend
+        debug("⚠️ Watchdog: mid-sync stall, sending NACK");
+        sendNack();
+      }
+    }
+  }, 1000);
+}
+
+function stopWatchdog() {
+  if (watchdogId) {
+    clearInterval(watchdogId);
+    watchdogId = null;
+  }
+}
+
+/* ---------------------------------------------------------
+   PACKETIZER
+--------------------------------------------------------- */
 function feedBytesIntoPacketizer(bytes) {
+  if (!bytes || bytes.length === 0) return;
+
   for (let b of bytes) rxBuffer.push(b);
 
   if (rxBuffer.length > 500000) {
@@ -153,6 +247,7 @@ function feedBytesIntoPacketizer(bytes) {
     currentMsg.received += take;
 
     if (currentMsg.received < currentMsg.expectedLen) {
+      // not complete yet, wait for more
       return;
     }
 
@@ -162,21 +257,20 @@ function feedBytesIntoPacketizer(bytes) {
     const idxHi = pb[1];
     const payloadIndex = idxLo | (idxHi << 8);
 
-    debug(`✔ Full payload index=${payloadIndex} bytes=${pb.length}`);
+    // ACK ASAP (C# style)
+    sendAck(payloadIndex);
 
-    /* NEW — REPORT THROUGHPUT */
+    // Then log + throughput
+    debug(`✔ Full payload index=${payloadIndex} bytes=${pb.length}`);
     reportThroughput(pb.length);
 
-    /* 👉 Save ONLY payloadBytes (matches C#/Java) */
+    // Save only payload bytes
     fileChunks.push(pb);
-
     totalBytes += pb.length;
     document.getElementById("byteCount").textContent = totalBytes.toLocaleString();
 
     document.getElementById("progressFill").style.width =
       Math.min(100, (totalBytes % 200000) / 2000) + "%";
-
-    writer.write(DATA_ACK).catch(() => {});
 
     currentMsg = null;
   }
@@ -189,7 +283,16 @@ async function handleEndOfSync() {
   debug("✔ Sync complete – building BIN...");
 
   keepReading = false;
-  try { reader && reader.releaseLock(); } catch {}
+  stopWatchdog();
+
+  try {
+    if (reader) {
+      await reader.cancel().catch(() => {});
+      reader.releaseLock();
+    }
+  } catch (e) {
+    debug("⚠️ Error while releasing reader in handleEndOfSync: " + e);
+  }
 
   const total = fileChunks.reduce((s, a) => s + a.length, 0);
   const merged = new Uint8Array(total);
@@ -210,6 +313,9 @@ async function handleEndOfSync() {
   a.click();
 
   debug(`💾 Saved ${filename} (${merged.length} bytes)`);
+
+  document.getElementById("syncBtn").disabled = false;
+  document.getElementById("stopBtn").disabled = true;
 }
 
 /* ---------------------------------------------------------
@@ -232,28 +338,79 @@ document.getElementById("connectBtn").onclick = async () => {
    START SYNC
 --------------------------------------------------------- */
 document.getElementById("syncBtn").onclick = async () => {
+  if (!port || !writer) {
+    debug("❌ No port/writer – connect first");
+    return;
+  }
+
   keepReading = true;
   rxBuffer = [];
   fileChunks = [];
   totalBytes = 0;
   currentMsg = null;
+  lastReplySent = ReplyType.NONE;
+  lastRxTime = performance.now();
+  readRestartCount = 0;
+  throughputAvg = 0;
+
+  document.getElementById("byteCount").textContent = "0";
+  document.getElementById("progressFill").style.width = "0%";
 
   debug("=== SYNC START ===");
-  await writer.write(READ_DATA_REQUEST);
+
+  // Start watchdog (C# style DataRequestTimer)
+  startWatchdog();
+
+  // Initial ReadDataRequest
+  sendReadDataRequest();
 
   reader = port.readable.getReader();
+  document.getElementById("syncBtn").disabled = true;
+  document.getElementById("stopBtn").disabled = false;
 
   while (keepReading) {
     try {
       const { value, done } = await reader.read();
-      if (done || !value) break;
-	  
+
+      if (done) {
+        debug("⚠️ reader.read() returned done=true — attempting restart if still syncing");
+
+        if (!keepReading) {
+          break;
+        }
+
+        if (readRestartCount < MAX_READ_RESTARTS) {
+          readRestartCount++;
+          debug(`⚠️ Restarting reader (attempt ${readRestartCount}) and resending ReadDataRequest`);
+          try {
+            reader.releaseLock();
+          } catch (e) {
+            debug("⚠️ Error releasing reader on restart: " + e);
+          }
+          reader = port.readable.getReader();
+          sendReadDataRequest();
+          continue;
+        } else {
+          debug("❌ Max reader restarts reached — aborting sync");
+          break;
+        }
+      }
+
+      if (!value || value.length === 0) {
+        debug("⚠️ Empty read");
+        continue;
+      }
+
+      lastRxTime = performance.now();
       feedBytesIntoPacketizer(value);
     } catch (err) {
       debug("❌ Read error: " + err);
       break;
     }
   }
+
+  stopWatchdog();
+  debug("ℹ Read loop ended");
 };
 
 /* ---------------------------------------------------------
@@ -261,7 +418,8 @@ document.getElementById("syncBtn").onclick = async () => {
 --------------------------------------------------------- */
 document.getElementById("stopBtn").onclick = () => {
   keepReading = false;
-  debug("⛔ STOP");
+  stopWatchdog();
+  debug("⛔ STOP requested by user");
 };
 </script>
 
