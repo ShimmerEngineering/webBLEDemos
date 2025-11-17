@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Shimmer3R Live Viewer</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script type="module">
+    import { Shimmer3RClient, SensorBitmapShimmer3 } from '../ShimmerAPI/shimmer3r.js';
+
+    const shimmer = new Shimmer3RClient({ debug: true });
+    let isStreaming = false;
+    let isSaving = false;
+    let chart, chartData = {}, fileBuffer = [], headerRow = [];
+    let sampleCounter = 0;
+    const ctx = document.getElementById('chart').getContext('2d');
+
+    // Build Sensor Dropdown Menu
+    const sensorMenu = document.getElementById('sensorMenu');
+    for (const [key, value] of Object.entries(SensorBitmapShimmer3)) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = key;
+      sensorMenu.appendChild(option);
+    }
+
+    async function refreshEnabledSensors() {
+      const enabled = shimmer.getEnabledSensors();
+      for (const opt of sensorMenu.options) {
+        const bit = parseInt(opt.value);
+        opt.selected = (enabled & bit) !== 0;
+      }
+      document.getElementById('status').textContent = `Enabled sensors: 0x${enabled.toString(16).toUpperCase()}`;
+    }
+
+    document.getElementById('applySensorsBtn').onclick = async () => {
+      try {
+        const selectedOptions = [...sensorMenu.selectedOptions];
+        if (selectedOptions.length === 0) return alert('Select at least one sensor');
+        let bitmask = 0;
+        selectedOptions.forEach(opt => bitmask |= parseInt(opt.value));
+        const result = await shimmer.setSensors(bitmask);
+        await refreshEnabledSensors();
+        buildSignalList(shimmer.schema.fields);
+        document.getElementById('status').textContent = `Sensors applied (0x${bitmask.toString(16).toUpperCase()})`;
+      } catch (e) { alert(e); }
+    };
+
+    // -------- Buttons --------
+    document.getElementById('connectBtn').onclick = async () => {
+      try {
+        await shimmer.connect();
+        document.getElementById('status').textContent = 'Connected. Running Inquiry...';
+        const info = await shimmer.inquiry();
+        buildSignalList(info.schema.fields);
+        await refreshEnabledSensors();
+      } catch (e) { alert(e); }
+    };
+
+    document.getElementById('disconnectBtn').onclick = async () => {
+      await shimmer.disconnect();
+      document.getElementById('status').textContent = 'Disconnected.';
+    };
+
+    document.getElementById('startBtn').onclick = async () => {
+      if (!shimmer.device) return alert('Connect first.');
+      isStreaming = true;
+      fileBuffer = [];
+      headerRow = [];
+      sampleCounter = 0;
+      await shimmer.startStreaming();
+      shimmer.onStreamFrame = onFrame;
+      document.getElementById('status').textContent = 'Streaming…';
+    };
+
+    document.getElementById('stopBtn').onclick = async () => {
+      isStreaming = false;
+      try {
+        await shimmer.stopStreaming();
+        document.getElementById('status').textContent = 'Stream stopped.';
+      } catch (e) {
+        console.error('Error while stopping stream:', e);
+        alert('Error stopping stream: ' + e.message);
+      }
+    };
+
+    document.getElementById('saveBtn').onclick = () => {
+      isSaving = !isSaving;
+      const btn = document.getElementById('saveBtn');
+      btn.textContent = isSaving ? 'Stop Saving' : 'Start Saving';
+
+      if (!isSaving && fileBuffer.length > 0) {
+        const csv = [headerRow.join(',')].concat(fileBuffer).join('\n');
+        const blob = new Blob([csv], { type: 'text/csv' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'shimmer_data.csv';
+        a.click();
+      }
+    };
+
+    // -------- Build signal list --------
+    function buildSignalList(fields) {
+      const listDiv = document.getElementById('signalList');
+      listDiv.innerHTML = '';
+      fields.forEach(f => {
+        if (f.name === 'TIMESTAMP') return;
+        const label = document.createElement('label');
+        const cb = document.createElement('input');
+        cb.type = 'checkbox'; cb.value = f.name;
+        cb.onchange = rebuildChart;
+        label.append(cb, f.name);
+        listDiv.append(label, document.createElement('br'));
+      });
+    }
+
+    function rebuildChart() {
+      const selected = [...document.querySelectorAll('#signalList input:checked')].map(cb => cb.value);
+      chartData = {};
+      const datasets = selected.map(name => {
+        chartData[name] = [];
+        return {
+          label: name,
+          data: [],
+          borderWidth: 1,
+          fill: false
+        };
+      });
+      if (chart) chart.destroy();
+      chart = new Chart(ctx, {
+        type: 'line',
+        data: { datasets },
+        options: {
+          animation: false,
+          scales: {
+            x: { type: 'linear', title: { text: 'Sample Index', display: true } },
+            y: { title: { text: 'Value', display: true } }
+          }
+        }
+      });
+
+      headerRow = ['SampleIndex', ...selected];
+    }
+
+    function onFrame(oc) {
+      if (!isStreaming || !chart) return;
+      sampleCounter++;
+      const row = [sampleCounter];
+      for (const name in chartData) {
+        const val = oc.get(name)?.value ?? null;
+        chartData[name].push({ x: sampleCounter, y: val });
+        row.push(val);
+      }
+      if (isSaving) fileBuffer.push(row.join(','));
+      for (const name in chartData) {
+        const arr = chartData[name];
+        if (arr.length > 200) arr.splice(0, arr.length - 200);
+        const ds = chart.data.datasets.find(d => d.label === name);
+        if (ds) ds.data = arr;
+      }
+      chart.update();
+    }
+
+    shimmer.onStatus = (msg) => document.getElementById('log').textContent = msg;
+  </script>
+
+  <style>
+    body { font-family: sans-serif; margin: 20px; }
+    #toolbar { margin-bottom: 10px; }
+    #chart { width: 100%; height: 400px; }
+    button { margin-right: 6px; }
+    #signalList { margin-top: 8px; }
+    #log { font-size: 0.9em; color: #555; margin-top: 6px; }
+  </style>
+</head>
+<body>
+  <h2>Shimmer3R Web Bluetooth Viewer</h2>
+  <div id="toolbar">
+    <button id="connectBtn">Connect</button>
+    <button id="startBtn">Start Stream</button>
+    <button id="stopBtn">Stop</button>
+    <button id="disconnectBtn">Disconnect</button>
+    <button id="saveBtn">Start Saving</button>
+
+    <select id="sensorMenu" multiple size="5" style="margin-left:10px; min-width: 220px;"></select>
+    <button id="applySensorsBtn">Apply Sensors</button>
+  </div>
+
+  <div id="status"></div>
+  <div id="signalList"></div>
+  <canvas id="chart"></canvas>
+  <div id="log"></div>
+</body>
+</html>
