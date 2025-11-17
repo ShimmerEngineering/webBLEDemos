@@ -63,6 +63,31 @@ function debug(msg) {
 /* ---------------------------------------------------------
    MESSAGE PARSER
 --------------------------------------------------------- */
+
+/* ---------------------------------------------------------
+   THROUGHPUT
+--------------------------------------------------------- */
+let lastPayloadTime = performance.now();
+let throughputAvg = 0;
+
+function reportThroughput(payloadLength) {
+  const now = performance.now();
+  const dt = (now - lastPayloadTime) / 1000;   // seconds
+  lastPayloadTime = now;
+
+  if (dt <= 0) return;
+
+  const kb = payloadLength / 1024;
+  const kbps = kb / dt;                        // instantaneous KB/s
+
+  // simple moving average
+  throughputAvg = throughputAvg === 0 ? kbps : (throughputAvg * 0.7 + kbps * 0.3);
+
+  debug(
+    `📊 Throughput: ${kbps.toFixed(2)} KB/s (avg ${throughputAvg.toFixed(2)} KB/s)`
+  );
+}
+
 function feedBytesIntoPacketizer(bytes) {
   for (let b of bytes) rxBuffer.push(b);
 
@@ -139,7 +164,9 @@ function feedBytesIntoPacketizer(bytes) {
 
     debug(`✔ Full payload index=${payloadIndex} bytes=${pb.length}`);
 
-    /* ---- THIS LINE IS THE KEY FIX ---- */
+    /* NEW — REPORT THROUGHPUT */
+    reportThroughput(pb.length);
+
     /* 👉 Save ONLY payloadBytes (matches C#/Java) */
     fileChunks.push(pb);
 
@@ -220,6 +247,7 @@ document.getElementById("syncBtn").onclick = async () => {
     try {
       const { value, done } = await reader.read();
       if (done || !value) break;
+	  
       feedBytesIntoPacketizer(value);
     } catch (err) {
       debug("❌ Read error: " + err);
