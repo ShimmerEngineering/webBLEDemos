@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Verisense Sync – Debug + Payload Index</title>
+  <style>
+    body { font-family: Arial; padding: 20px; }
+    button { padding: 10px 20px; margin: 8px; }
+    pre { background: #111; color: #0f0; padding: 10px; height: 350px; overflow-y: auto; font-size: 14px; }
+    #progressBox { background:#333; width:100%; height:20px; border-radius:4px; overflow:hidden; margin-top:10px; }
+    #progressFill { background:#0f0; width:0%; height:100%; }
+  </style>
+</head>
+<body>
+
+<h2>Verisense Full Sync (Debug Mode)</h2>
+
+<button id="connectBtn">Connect</button>
+<button id="syncBtn" disabled>Start Sync</button>
+<button id="stopBtn" disabled>Stop & Save BIN</button>
+
+<div id="progressBox"><div id="progressFill"></div></div>
+<p><b>Total Bytes:</b> <span id="byteCount">0</span></p>
+
+<pre id="log"></pre>
+
+<script>
+/* ---------------------------------------------------------
+   CONSTANTS / PROTOCOL
+--------------------------------------------------------- */
+const DATA_HEADER       = 0x32;                 // Logged data message
+const DATA_END_HEADER   = 0x42;                 // End-of-sync marker
+const READ_DATA_REQUEST = new Uint8Array([0x12, 0x00, 0x00]);
+const DATA_ACK          = new Uint8Array([0x82, 0x00, 0x00]);
+
+/* ---------------------------------------------------------
+   GLOBALS
+--------------------------------------------------------- */
+let port, reader, writer;
+let keepReading = false;
+
+let rxBuffer = [];
+let fileChunks = [];        // PAYLOAD BYTES ONLY
+let totalBytes = 0;
+
+let currentMsg = null;
+
+let lastTs = performance.now();
+
+/* ---------------------------------------------------------
+   DEBUG
+--------------------------------------------------------- */
+function debug(msg) {
+  const now = performance.now();
+  const delta = (now - lastTs).toFixed(2);
+  lastTs = now;
+
+  const el = document.getElementById("log");
+  el.textContent += `[+${delta}ms] ${msg}\n`;
+  el.scrollTop = el.scrollHeight;
+}
+
+/* ---------------------------------------------------------
+   MESSAGE PARSER
+--------------------------------------------------------- */
+function feedBytesIntoPacketizer(bytes) {
+  for (let b of bytes) rxBuffer.push(b);
+
+  if (rxBuffer.length > 500000) {
+    debug("❌ Buffer overflow — resetting");
+    rxBuffer = [];
+    currentMsg = null;
+    return;
+  }
+
+  while (rxBuffer.length >= 3) {
+
+    /* --- EOS 0x42 00 00 --- */
+    if (rxBuffer[0] === DATA_END_HEADER) {
+      if (rxBuffer.length < 3) return;
+      if (rxBuffer[1] === 0x00 && rxBuffer[2] === 0x00) {
+        debug("🔚 EOS received");
+        rxBuffer.splice(0, 3);
+        handleEndOfSync();
+        return;
+      } else {
+        rxBuffer.shift();
+        continue;
+      }
+    }
+
+    /* --- MESSAGE HEADER 0x32 --- */
+    if (!currentMsg) {
+      const cmd = rxBuffer[0];
+      if (cmd !== DATA_HEADER) {
+        rxBuffer.shift();
+        continue;
+      }
+
+      const lenLo = rxBuffer[1];
+      const lenHi = rxBuffer[2];
+      const expectedLen = (lenHi << 8) | lenLo;
+
+      if (expectedLen <= 0 || expectedLen > 60000) {
+        rxBuffer.shift();
+        continue;
+      }
+
+      if (rxBuffer.length < 3) return;
+
+      currentMsg = {
+        expectedLen,
+        received: 0,
+        payload: new Uint8Array(expectedLen)
+      };
+
+      rxBuffer.splice(0, 3);
+      debug(`📥 Start payload expectedLen=${expectedLen}`);
+      continue;
+    }
+
+    /* --- READ PAYLOAD BYTES --- */
+    const need = currentMsg.expectedLen - currentMsg.received;
+    const take = Math.min(need, rxBuffer.length);
+
+    currentMsg.payload.set(rxBuffer.slice(0, take), currentMsg.received);
+    rxBuffer.splice(0, take);
+    currentMsg.received += take;
+
+    if (currentMsg.received < currentMsg.expectedLen) {
+      return;
+    }
+
+    /* --- FULL PAYLOAD COMPLETED --- */
+    const pb = currentMsg.payload;
+    const idxLo = pb[0];
+    const idxHi = pb[1];
+    const payloadIndex = idxLo | (idxHi << 8);
+
+    debug(`✔ Full payload index=${payloadIndex} bytes=${pb.length}`);
+
+    /* ---- THIS LINE IS THE KEY FIX ---- */
+    /* 👉 Save ONLY payloadBytes (matches C#/Java) */
+    fileChunks.push(pb);
+
+    totalBytes += pb.length;
+    document.getElementById("byteCount").textContent = totalBytes.toLocaleString();
+
+    document.getElementById("progressFill").style.width =
+      Math.min(100, (totalBytes % 200000) / 2000) + "%";
+
+    writer.write(DATA_ACK).catch(() => {});
+
+    currentMsg = null;
+  }
+}
+
+/* ---------------------------------------------------------
+   END OF SYNC → WRITE BIN
+--------------------------------------------------------- */
+async function handleEndOfSync() {
+  debug("✔ Sync complete – building BIN...");
+
+  keepReading = false;
+  try { reader && reader.releaseLock(); } catch {}
+
+  const total = fileChunks.reduce((s, a) => s + a.length, 0);
+  const merged = new Uint8Array(total);
+  let offset = 0;
+
+  for (const chunk of fileChunks) {
+    merged.set(chunk, offset);
+    offset += chunk.length;
+  }
+
+  const blob = new Blob([merged], { type: "application/octet-stream" });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  const filename = new Date().toISOString().replace(/[:.]/g, "-") + ".bin";
+
+  a.href = url;
+  a.download = filename;
+  a.click();
+
+  debug(`💾 Saved ${filename} (${merged.length} bytes)`);
+}
+
+/* ---------------------------------------------------------
+   CONNECT
+--------------------------------------------------------- */
+document.getElementById("connectBtn").onclick = async () => {
+  try {
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+
+    writer = port.writable.getWriter();
+    document.getElementById("syncBtn").disabled = false;
+    debug("✔ Connected.");
+  } catch (err) {
+    debug("❌ Connect error: " + err);
+  }
+};
+
+/* ---------------------------------------------------------
+   START SYNC
+--------------------------------------------------------- */
+document.getElementById("syncBtn").onclick = async () => {
+  keepReading = true;
+  rxBuffer = [];
+  fileChunks = [];
+  totalBytes = 0;
+  currentMsg = null;
+
+  debug("=== SYNC START ===");
+  await writer.write(READ_DATA_REQUEST);
+
+  reader = port.readable.getReader();
+
+  while (keepReading) {
+    try {
+      const { value, done } = await reader.read();
+      if (done || !value) break;
+      feedBytesIntoPacketizer(value);
+    } catch (err) {
+      debug("❌ Read error: " + err);
+      break;
+    }
+  }
+};
+
+/* ---------------------------------------------------------
+   STOP
+--------------------------------------------------------- */
+document.getElementById("stopBtn").onclick = () => {
+  keepReading = false;
+  debug("⛔ STOP");
+};
+</script>
+
+</body>
+</html>
