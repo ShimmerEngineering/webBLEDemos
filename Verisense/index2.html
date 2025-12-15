@@ -144,64 +144,6 @@
       `;
     }
 
-    async function connectUsingExistingDevice(btDevice) {
-      if (!btDevice) throw new Error("No device selected");
-
-      // Fresh instance each connect
-      v = new VerisenseBleDevice({
-        hardwareIdentifier: "VERISENSE_PULSE_PLUS",
-        stripStreamCrc: true,
-        verifyStreamCrc: false
-      });
-      configureAccelOnly(v);
-
-      v.on("disconnected", () => {
-        log("disconnected");
-        setStatus("disconnected");
-        btnDisconnect.disabled = true;
-        btnStart.disabled = true;
-        btnStop.disabled = true;
-        btnConnect.disabled = false;
-      });
-
-      v.on("data", (pkt) => {
-        if (pkt.sensorId !== 2) return; // accel1 only
-        accelPackets++;
-        if (accelPackets % 20 === 0) log(`accel pkt#${accelPackets}`, { tick_u24: pkt.tick_u24, crcOk: pkt.crcOk });
-        renderLatest(pkt);
-      });
-
-      // Manual connect using the already-selected BluetoothDevice
-      v.device = btDevice;
-      btDevice.addEventListener("gattserverdisconnected", () => {
-        v?.emit?.("disconnected", {});
-        v._mode = "idle";
-      });
-
-      setStatus("connecting...");
-      v.server = await btDevice.gatt.connect();
-      v.service = await v.server.getPrimaryService(VerisenseBleDevice.NUS_SERVICE);
-      v.tx = await v.service.getCharacteristic(VerisenseBleDevice.NUS_TX);
-      v.rx = await v.service.getCharacteristic(VerisenseBleDevice.NUS_RX);
-
-      await v.rx.startNotifications();
-      v.rx.addEventListener("characteristicvaluechanged", (ev) => {
-        const dv = ev.target.value;
-        const bytes = new Uint8Array(dv.buffer.slice(dv.byteOffset, dv.byteOffset + dv.byteLength));
-        v._onRx(bytes);
-      });
-
-      accelPackets = 0;
-      latestEl.textContent = "—";
-      log("connected:", { name: btDevice.name, id: btDevice.id });
-
-      setStatus("connected");
-      btnDisconnect.disabled = false;
-      btnStart.disabled = false;
-      btnStop.disabled = true;
-      btnConnect.disabled = true;
-    }
-
     // --- UI actions ---
 
     btnScan.onclick = async () => {
@@ -266,12 +208,54 @@
       btnConnect.disabled = false;
     });
 
-    v.on("data", (pkt) => {
-      if (pkt.sensorId !== 2) return; // accel1 only
-      accelPackets++;
-      if (accelPackets % 20 === 0) log(`accel pkt#${accelPackets}`, { tick_u24: pkt.tick_u24, crcOk: pkt.crcOk });
-      renderLatest(pkt);
-    });
+let accelPackets = 0;
+let accelSamples = 0;
+
+// rolling rate calc
+let t0 = performance.now();
+let p0 = 0, s0 = 0;
+
+// UI throttle
+let pendingPkt = null;
+let rafId = null;
+
+function scheduleRender(pkt) {
+  pendingPkt = pkt;
+  if (rafId) return;
+  rafId = requestAnimationFrame(() => {
+    rafId = null;
+    if (pendingPkt) renderLatest(pendingPkt);
+  });
+}
+
+v.on("data", (pkt) => {
+  if (pkt.sensorId !== 2) return;
+
+  accelPackets++;
+  const nSamples = Array.isArray(pkt.decoded) ? pkt.decoded.length : 0;
+  accelSamples += nSamples;
+
+  // update rates every ~500ms
+  const now = performance.now();
+  if (now - t0 >= 500) {
+    const dt = (now - t0) / 1000;
+    const pps = (accelPackets - p0) / dt;
+    const sps = (accelSamples - s0) / dt;
+
+    // show both, so you don't confuse packets with samples
+    // (add a div in your UI or just log it)
+    // e.g. latestEl or status line:
+    // statusEl.textContent = `Status: streaming | pps=${pps.toFixed(1)} | sps=${sps.toFixed(1)} | spp=${(sps/pps).toFixed(1)}`;
+    console.log(`[rate] pps=${pps.toFixed(1)} sps=${sps.toFixed(1)} samples/packet=${(pps>0?(sps/pps):0).toFixed(1)}`);
+
+    t0 = now;
+    p0 = accelPackets;
+    s0 = accelSamples;
+  }
+
+  scheduleRender(pkt);
+});
+
 
     // Optional: surface your op-config logs to the on-page log too
     v.on("opConfig", ({ op }) => log("opConfig received", { len: op?.length, head: Array.from(op?.slice?.(0, 16) ?? []) }));
