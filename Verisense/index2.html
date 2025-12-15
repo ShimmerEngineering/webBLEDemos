@@ -61,7 +61,7 @@
 
   <script type="module">
     import { VerisenseBleDevice } from "./verisense.js";
-
+	console.log('helloworld'); // <— add this
     const $ = (id) => document.getElementById(id);
     const logEl = $("log");
     const latestEl = $("latest");
@@ -243,13 +243,60 @@
     };
 
     btnConnect.onclick = async () => {
-      try {
-        const dev = getSelectedDevice();
-        await connectUsingExistingDevice(dev);
-      } catch (e) {
-        log("connect error:", String(e?.message ?? e));
-        setStatus("error");
-      }
+	
+  try {
+    const dev = getSelectedDevice();
+    if (!dev) throw new Error("No device selected");
+
+    // Fresh instance each connect
+    v = new VerisenseBleDevice({
+      hardwareIdentifier: "VERISENSE_PULSE_PLUS",
+      stripStreamCrc: true,
+      verifyStreamCrc: false
+    });
+    configureAccelOnly(v);
+
+    // (re)wire listeners
+    v.on("disconnected", () => {
+      log("disconnected");
+      setStatus("disconnected");
+      btnDisconnect.disabled = true;
+      btnStart.disabled = true;
+      btnStop.disabled = true;
+      btnConnect.disabled = false;
+    });
+
+    v.on("data", (pkt) => {
+      if (pkt.sensorId !== 2) return; // accel1 only
+      accelPackets++;
+      if (accelPackets % 20 === 0) log(`accel pkt#${accelPackets}`, { tick_u24: pkt.tick_u24, crcOk: pkt.crcOk });
+      renderLatest(pkt);
+    });
+
+    // Optional: surface your op-config logs to the on-page log too
+    v.on("opConfig", ({ op }) => log("opConfig received", { len: op?.length, head: Array.from(op?.slice?.(0, 16) ?? []) }));
+    v.on("opConfigError", (e) => log("opConfigError", e));
+
+    setStatus("connecting...");
+    accelPackets = 0;
+    latestEl.textContent = "—";
+
+    // IMPORTANT: call the class connect() now
+    await v.connect({ device: dev });
+
+    log("connected:", { name: dev.name, id: dev.id });
+
+    setStatus("connected");
+    btnDisconnect.disabled = false;
+    btnStart.disabled = false;
+    btnStop.disabled = true;
+    btnConnect.disabled = true;
+
+  } catch (e) {
+    log("connect error:", String(e?.message ?? e));
+    console.warn(e);
+    setStatus("error");
+  }
     };
 
     btnDisconnect.onclick = async () => {

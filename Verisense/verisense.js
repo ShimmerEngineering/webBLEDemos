@@ -17,7 +17,82 @@ class TinyEmitter {
   emit(ev, data) { const s = this._m.get(ev); if (s) for (const fn of s) fn(data); }
 }
 
-// ---------- helpers ----------
+function normalizeOperationalConfig(payload) {
+  if (!payload) return null;
+  if (payload instanceof Uint8Array) return payload;
+  if (payload instanceof ArrayBuffer) return new Uint8Array(payload);
+  if (Array.isArray(payload)) return new Uint8Array(payload);
+  // DataView / TypedArray
+  if (payload.buffer) return new Uint8Array(payload.buffer, payload.byteOffset ?? 0, payload.byteLength ?? payload.buffer.byteLength);
+  throw new Error("normalizeOperationalConfig: unsupported payload type");
+}
+
+const OP_IDX = Object.freeze({
+  GEN_CFG_0: 1,
+  GEN_CFG_1: 2,
+  GEN_CFG_2: 3,
+  GEN_CFG_3: 4,
+
+  ACCEL1_CFG_0: 5,
+  ACCEL1_CFG_1: 6,
+  ACCEL1_CFG_2: 7,
+  ACCEL1_CFG_3: 8,
+
+  GYRO_ACCEL2_CFG_0: 10,
+  GYRO_ACCEL2_CFG_1: 11,
+  GYRO_ACCEL2_CFG_2: 12,
+  GYRO_ACCEL2_CFG_3: 13,
+  GYRO_ACCEL2_CFG_4: 14,
+  GYRO_ACCEL2_CFG_5: 15,
+  GYRO_ACCEL2_CFG_6: 16,
+  GYRO_ACCEL2_CFG_7: 17,
+
+  START_TIME: 21,
+  END_TIME: 25,
+  INACTIVE_TIMEOUT: 29,
+  BLE_RETRY_COUNT: 30,
+  BLE_TX_POWER: 31,
+  BLE_DATA_TRANS_WKUP_INT_HRS: 32,
+  BLE_DATA_TRANS_WKUP_TIME: 33,
+  BLE_DATA_TRANS_WKUP_DUR: 35,
+  BLE_DATA_TRANS_RETRY_INT: 36,
+  BLE_STATUS_WKUP_INT_HRS: 38,
+  BLE_STATUS_WKUP_TIME: 39,
+  BLE_STATUS_WKUP_DUR: 41,
+  BLE_STATUS_RETRY_INT: 42,
+  BLE_RTC_SYNC_WKUP_INT_HRS: 44,
+  BLE_RTC_SYNC_WKUP_TIME: 45,
+  BLE_RTC_SYNC_WKUP_DUR: 47,
+  BLE_RTC_SYNC_RETRY_INT: 48,
+
+  ADC_CHANNEL_SETTINGS_0: 50,
+  ADC_CHANNEL_SETTINGS_1: 51,
+  ADAPTIVE_SCHEDULER_INT: 52,
+  ADAPTIVE_SCHEDULER_FAILCOUNT_MAX: 54,
+  PPG_REC_DUR_SECS_LSB: 55,
+  PPG_REC_DUR_SECS_MSB: 56,
+  PPG_REC_INT_MINS_LSB: 57,
+  PPG_REC_INT_MINS_MSB: 58,
+  PPG_FIFO_CONFIG: 59,
+  PPG_MODE_CONFIG2: 60,
+  PPG_MA_DEFAULT: 61,
+  PPG_MA_MAX_RED_IR: 62,
+  PPG_MA_MAX_GREEN_BLUE: 63,
+  PPG_AGC_TARGET_PERCENT_OF_RANGE: 64,
+  PPG_MA_LED_PILOT: 66,
+  PPG_DAC1_CROSSTALK: 67,
+  PPG_DAC2_CROSSTALK: 68,
+  PPG_DAC3_CROSSTALK: 69,
+  PPG_DAC4_CROSSTALK: 70,
+  PROX_AGC_MODE: 71
+});
+// safe byte getter
+function b(op, idx) {
+  if (!op || idx == null) return null;
+  if (idx < 0 || idx >= op.length) return null;
+  return op[idx] & 0xFF;
+}
+
 function u16le(b0, b1) { return (b1 << 8) | b0; }
 function i16le(bytes, off) {
   const v = (bytes[off] | (bytes[off + 1] << 8));
@@ -172,6 +247,58 @@ class SensorLIS2DW12 extends SensorBase {
     }
     return out;
   }
+  
+    applyOperationalConfig(op) {
+  console.log("[LIS2DW12] applyOperationalConfig()");
+  console.log("[LIS2DW12] op len =", op?.length, "op[0]=", op ? `0x${op[0].toString(16)}` : "(null)");
+  console.log("GEN_CFG_0", OP_IDX.GEN_CFG_0);
+  console.log("ACCEL1_CFG_0", OP_IDX.ACCEL1_CFG_0);
+  console.log("ACCEL1_CFG_1", OP_IDX.ACCEL1_CFG_1);
+  console.log("ACCEL1_CFG_2", OP_IDX.ACCEL1_CFG_2);
+
+  const gen0 = b(op, OP_IDX.GEN_CFG_0);
+  const cfg0 = b(op, OP_IDX.ACCEL1_CFG_0);
+  const cfg1 = b(op, OP_IDX.ACCEL1_CFG_1);
+
+  if (gen0 == null || cfg0 == null || cfg1 == null) {
+    console.warn("[LIS2DW12] Missing required bytes; cannot apply config.");
+    return;
+  }
+
+  this.enabled = ((gen0 >> 7) & 0x01) === 1;
+
+  const rangeSetting = (cfg1 >> 4) & 0x03;
+  const modeSetting  = (cfg0 >> 2) & 0x03;
+  const rateSetting  = (cfg0 >> 4) & 0x0F;
+
+  console.log("[LIS2DW12] decoded bits:", {
+    enabled: this.enabled,
+    rangeSetting,
+    modeSetting,
+    rateSetting
+  });
+
+  const rangeMap = { 0: "2G", 1: "4G", 2: "8G", 3: "16G" };
+  const nextRange = rangeMap[rangeSetting] ?? "2G";
+  const prevRange = this.range;
+
+  this.setRange(nextRange);
+
+  const lowPowerHzByCfg = { 1: 1.6, 2: 12.5, 3: 25, 4: 50, 5: 100, 6: 200 };
+  const highPerfHzByCfg = { 1: 12.5, 3: 25, 4: 50, 5: 100, 6: 200, 7: 400, 8: 800, 9: 1600 };
+
+  const isLowPower = (modeSetting === 0);
+  const hz = isLowPower ? lowPowerHzByCfg[rateSetting] : highPerfHzByCfg[rateSetting];
+  const prevHz = this.samplingRateHz;
+
+  if (hz) this.samplingRateHz = hz;
+
+  console.log("[LIS2DW12] applied:", {
+    prevRange, nextRange: this.range,
+    prevHz, nextHz: this.samplingRateHz,
+    isLowPower
+  });
+}
 }
 
 // ---------- sensor: LSM6DS3 accel/gyro (id=3) ----------
@@ -205,6 +332,10 @@ class SensorLSM6DS3 extends SensorBase {
     this.accEnabled = true;
     this.gyroEnabled = true;
     this.samplingRateHz = 50; // set to your actual config
+	
+	
+	
+	
   }
 
   setAccelEnabled(v) { this.accEnabled = !!v; }
@@ -268,6 +399,45 @@ class SensorLSM6DS3 extends SensorBase {
       });
     }
     return out;
+  }
+  
+  applyOperationalConfig(op) {
+    // Enabled flags (GEN_CFG_0 bit6 accel2, bit5 gyro) :contentReference[oaicite:10]{index=10}
+    this.accEnabled  = (op[OP_IDX.GEN_CFG_0] & 0b01000000) !== 0;
+    this.gyroEnabled = (op[OP_IDX.GEN_CFG_0] & 0b00100000) !== 0;
+
+    // Sampling rate nibble(s) live in GYRO_ACCEL2_CFG_4 (accel hi nibble, gyro low nibble)
+    const cfg4 = op[OP_IDX.GYRO_ACCEL2_CFG_4];
+    const accelRateCfg = (cfg4 >> 4) & 0x0F;
+    const gyroRateCfg  = (cfg4 >> 0) & 0x0F;
+
+    // Config-value -> Hz mapping (match your SamplingRate.Settings)
+    const hzByCfg = {
+      0: null,
+      1: 12.5,
+      2: 26,
+      3: 52,
+      4: 104,
+      5: 208,
+      6: 416,
+      7: 833,
+      8: 1660
+    };
+
+    // Range bits live in GYRO_ACCEL2_CFG_5
+    const cfg5 = op[OP_IDX.GYRO_ACCEL2_CFG_5];
+    const accelRangeCfg = (cfg5 >> 2) & 0x03;      // :contentReference[oaicite:11]{index=11}
+    const gyroRangeCfg  = (cfg5 >> 4) & 0x03;      // :contentReference[oaicite:12]{index=12}
+
+    const accelRangeMap = { 0: "2G", 1: "4G", 2: "8G", 3: "16G" };
+    const gyroRangeMap  = { 0: "250DPS", 1: "500DPS", 2: "1000DPS", 3: "2000DPS" };
+
+    this.setAccelRange(accelRangeMap[accelRangeCfg] ?? this.accRange);
+    this.setGyroRange(gyroRangeMap[gyroRangeCfg] ?? this.gyroRange);
+
+    // In your C# there’s effectively “one ODR”, but accel/gyro fields exist; pick accel as main
+    const hz = hzByCfg[accelRateCfg] ?? hzByCfg[gyroRateCfg];
+    if (hz) this.samplingRateHz = hz;
   }
 }
 
@@ -347,6 +517,8 @@ class SensorPPG extends SensorBase {
     }
     return out;
   }
+   
+  
 }
 
 // ---------- sensor: GSR (id=1) ----------
@@ -523,14 +695,15 @@ export class VerisenseBleDevice extends TinyEmitter {
   get gyroAccel2() { return this.sensors[3]; }
   get ppg() { return this.sensors[4]; }
 
-  async connect({ filters, optionalServices } = {}) {
-    const opts = {
-      // Prefer namePrefix if you have it, else keep service filter.
-      filters: filters ?? [{ services: [VerisenseBleDevice.NUS_SERVICE] }],
-      optionalServices: optionalServices ?? [VerisenseBleDevice.NUS_SERVICE]
-    };
+  async connect({ device = null, filters, optionalServices } = {}) {
+  console.log("CONNECT");
 
-    this.device = await navigator.bluetooth.requestDevice(opts);
+  const opts = {
+    filters: filters ?? [{ services: [VerisenseBleDevice.NUS_SERVICE] }],
+    optionalServices: optionalServices ?? [VerisenseBleDevice.NUS_SERVICE]
+  };
+
+  this.device = device ?? await navigator.bluetooth.requestDevice(opts);
     this.device.addEventListener("gattserverdisconnected", () => {
       this.emit("disconnected", {});
       this._mode = "idle";
@@ -547,8 +720,89 @@ export class VerisenseBleDevice extends TinyEmitter {
       const bytes = new Uint8Array(v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength));
       this._onRx(bytes);
     });
-
+	console.log(`CONNECT`);
     this.emit("connected", { name: this.device.name, id: this.device.id });
+	
+	 // ---- NEW: read op config + apply it to sensors ----
+try {
+  console.log("[opcfg] requesting readOperationalConfig (0x14)...");
+  const t0 = performance.now();
+
+  const rsp = await this.readOperationalConfig(); // { payload }
+  const dt = (performance.now() - t0).toFixed(1);
+
+  const payload = rsp?.payload;
+  console.log(`[opcfg] response received in ${dt} ms`);
+  console.log("[opcfg] payload type:", payload?.constructor?.name);
+  console.log("[opcfg] payload len:", payload?.length);
+
+  // hex dump helper (inline)
+  const toHex = (u8, max = 96) => {
+    if (!u8) return "(null)";
+    const a = Array.from(u8.slice(0, max)).map(b => b.toString(16).padStart(2, "0")).join(" ");
+    return u8.length > max ? `${a} … (+${u8.length - max} bytes)` : a;
+  };
+
+  console.log("[opcfg] payload head:", toHex(payload, 96));
+
+  const op = normalizeOperationalConfig(payload);
+  console.log("[opcfg] normalized len:", op?.length);
+  console.log("[opcfg] normalized head:", toHex(op, 96));
+  console.log("[opcfg] normalized startsWith 0x5A:", op?.[0] === 0x5A);
+
+  // If you have OP_IDX defined, log the important bytes
+  if (typeof OP_IDX !== "undefined") {
+    const safe = (idx) => (op && idx >= 0 && idx < op.length) ? op[idx] : null;
+    const logByte = (name, idx) => {
+      const v = safe(idx);
+      console.log(`[opcfg] ${name} @${idx}:`, v == null ? "OUT_OF_RANGE" : `0x${v.toString(16).padStart(2,"0")} (${v})`);
+    };
+
+    logByte("GEN_CFG_0", OP_IDX.GEN_CFG_0);
+    logByte("ACCEL1_CFG_0", OP_IDX.ACCEL1_CFG_0);
+    logByte("ACCEL1_CFG_1", OP_IDX.ACCEL1_CFG_1);
+    logByte("ACCEL1_CFG_2", OP_IDX.ACCEL1_CFG_2);
+    logByte("GYRO_ACCEL2_CFG_4", OP_IDX.GYRO_ACCEL2_CFG_4);
+    logByte("GYRO_ACCEL2_CFG_5", OP_IDX.GYRO_ACCEL2_CFG_5);
+  } else {
+    console.warn("[opcfg] OP_IDX not defined; skipping per-field byte logging.");
+  }
+
+  this.operationalConfig = op;
+
+  // Before/after snapshots
+  console.log("[opcfg] accel1 BEFORE:", { range: this.accel1.range, hz: this.accel1.samplingRateHz, enabled: this.accel1.enabled });
+  this.accel1.applyOperationalConfig(op);
+  console.log("[opcfg] accel1 AFTER :", { range: this.accel1.range, hz: this.accel1.samplingRateHz, enabled: this.accel1.enabled });
+
+  console.log("[opcfg] gyroAccel2 BEFORE:", {
+    accEnabled: this.gyroAccel2.accEnabled,
+    gyroEnabled: this.gyroAccel2.gyroEnabled,
+    accRange: this.gyroAccel2.accRange,
+    gyroRange: this.gyroAccel2.gyroRange,
+    hz: this.gyroAccel2.samplingRateHz
+  });
+  if (typeof this.gyroAccel2.applyOperationalConfig === "function") {
+    this.gyroAccel2.applyOperationalConfig(op);
+  } else {
+    console.warn("[opcfg] gyroAccel2.applyOperationalConfig() is missing (did you paste it into the wrong class?)");
+  }
+  console.log("[opcfg] gyroAccel2 AFTER :", {
+    accEnabled: this.gyroAccel2.accEnabled,
+    gyroEnabled: this.gyroAccel2.gyroEnabled,
+    accRange: this.gyroAccel2.accRange,
+    gyroRange: this.gyroAccel2.gyroRange,
+    hz: this.gyroAccel2.samplingRateHz
+  });
+
+  this.emit("opConfig", { op });
+  console.log("[opcfg] done.");
+} catch (e) {
+  console.warn("[opcfg] FAILED:", e);
+  this.emit("opConfigError", { error: String(e?.message ?? e), stack: e?.stack });
+}
+
+	
     return true;
   }
 
@@ -742,32 +996,4 @@ export class VerisenseBleDevice extends TinyEmitter {
   }
 }
 
-/* ------------------ example usage ------------------
 
-import { VerisenseBleDevice } from "./verisense.js";
-
-const v = new VerisenseBleDevice({
-  hardwareIdentifier: "VERISENSE_PULSE_PLUS",
-  stripStreamCrc: true,
-  verifyStreamCrc: false
-});
-
-// configure decoders to match your op config
-v.gyroAccel2.setAccelEnabled(true);
-v.gyroAccel2.setGyroEnabled(true);
-v.gyroAccel2.setAccelRange("2G");
-v.gyroAccel2.setGyroRange("250DPS");
-
-v.ppg.setChannels({ red: true, ir: true, green: false, blue: false });
-v.ppg.setAdcResolutionIndex(0);
-
-v.on("data", (pkt) => {
-  // pkt.sensorId: 1/2/3/4
-  // pkt.decoded: array of samples (each sample may include timestamps)
-  console.log(pkt.sensorId, pkt.decoded?.[0]);
-});
-
-await v.connect();
-await v.startStreaming();
-
------------------------------------------------------ */
