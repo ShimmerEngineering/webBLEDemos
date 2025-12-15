@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Verisense BLE Scan/Select + Stream (Accel @ 51.2Hz)</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 16px; }
+    .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin: 10px 0; }
+    button, select, input { padding: 10px 12px; }
+    .card { border: 1px solid #444; border-radius: 12px; padding: 12px; }
+    pre { background:#111; color:#ddd; padding:10px; border-radius:12px; overflow:auto; max-height: 320px; }
+    small { color:#666; }
+    .grid { display:grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  </style>
+</head>
+<body>
+  <h2>Verisense Stream (Accel1 / LIS2DW12 @ 51.2 Hz)</h2>
+  <small>Must be served over <b>https</b> or <b>http://localhost</b>. Click buttons (user gesture required).</small>
+
+  <div class="card">
+    <div class="row">
+      <label>Name prefix (optional):</label>
+      <input id="namePrefix" placeholder="e.g. VERISENSE" />
+    </div>
+
+    <div class="row">
+      <button id="btnScan">Scan / Select Device</button>
+      <button id="btnRefreshKnown">Refresh Known Devices</button>
+
+      <label>Selected:</label>
+      <select id="deviceSelect" style="min-width: 360px;">
+        <option value="">(none)</option>
+      </select>
+
+      <button id="btnConnect" disabled>Connect</button>
+      <button id="btnDisconnect" disabled>Disconnect</button>
+    </div>
+
+    <div class="row">
+      <button id="btnStart" disabled>Start streaming</button>
+      <button id="btnStop" disabled>Stop streaming</button>
+      <span id="status">Status: idle</span>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h3>Latest accel sample</h3>
+      <div id="latest">—</div>
+    </div>
+
+    <div class="card">
+      <h3>Log</h3>
+      <pre id="log"></pre>
+      <div class="row">
+        <button id="btnClear">Clear log</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { VerisenseBleDevice } from "./verisense.js";
+
+    const $ = (id) => document.getElementById(id);
+    const logEl = $("log");
+    const latestEl = $("latest");
+    const statusEl = $("status");
+
+    const btnScan = $("btnScan");
+    const btnRefreshKnown = $("btnRefreshKnown");
+    const btnConnect = $("btnConnect");
+    const btnDisconnect = $("btnDisconnect");
+    const btnStart = $("btnStart");
+    const btnStop = $("btnStop");
+    const btnClear = $("btnClear");
+
+    const deviceSelect = $("deviceSelect");
+    const namePrefixEl = $("namePrefix");
+
+    function log(...args) {
+      const s = args.map(a => (typeof a === "string" ? a : JSON.stringify(a, null, 2))).join(" ");
+      logEl.textContent += s + "\n";
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+    function setStatus(s) { statusEl.textContent = `Status: ${s}`; }
+
+    // Keep a map of devices we can connect to (authorized via chooser or getDevices)
+    const devicesById = new Map(); // id -> BluetoothDevice
+
+    function upsertDeviceOption(dev) {
+      if (!dev?.id) return;
+      devicesById.set(dev.id, dev);
+
+      let opt = [...deviceSelect.options].find(o => o.value === dev.id);
+      if (!opt) {
+        opt = document.createElement("option");
+        opt.value = dev.id;
+        deviceSelect.appendChild(opt);
+      }
+      opt.textContent = `${dev.name ?? "(unnamed)"}  [${dev.id}]`;
+      deviceSelect.value = dev.id;
+
+      btnConnect.disabled = false;
+    }
+
+    function getSelectedDevice() {
+      const id = deviceSelect.value;
+      return id ? devicesById.get(id) : null;
+    }
+
+    // Your Verisense instance
+    let v = null;
+    let accelPackets = 0;
+
+    function configureAccelOnly(dev) {
+      // We only decode/display accel1 (sensorId = 2). Actual device-side streaming config is separate.
+      dev.accel1.setRange("2G");
+      dev.accel1.samplingRateHz = 51.2;
+
+      // Turn off other decoders (optional)
+      dev.gyroAccel2.setAccelEnabled(false);
+      dev.gyroAccel2.setGyroEnabled(false);
+      dev.ppg.setChannels({ red:false, ir:false, green:false, blue:false });
+      dev.gsr.setEnabled({ gsr:false, batt:false });
+    }
+
+    function renderLatest(pkt) {
+      const first = Array.isArray(pkt.decoded) ? pkt.decoded[0] : null;
+      if (!first?.cal) {
+        latestEl.innerHTML = `<div>packets: ${accelPackets}</div><div>No decoded accel yet</div>`;
+        return;
+      }
+      const cal = first.cal.map(n => n.toFixed(5)).join(", ");
+      const t = first.timestamps;
+      const ts = t ? `${t.tsMillis.toFixed(1)} ms (plot=${t.systemTsPlotMillis.toFixed(1)})` : "—";
+
+      latestEl.innerHTML = `
+        <div><b>Accel1 (sensorId=2)</b></div>
+        <div>packets: ${accelPackets}</div>
+        <div>tick_u24: ${pkt.tick_u24}</div>
+        <div>cal (m/s²): ${cal}</div>
+        <div><small>timestamp: ${ts} | crcOk: ${pkt.crcOk ?? "n/a"}</small></div>
+      `;
+    }
+
+    async function connectUsingExistingDevice(btDevice) {
+      if (!btDevice) throw new Error("No device selected");
+
+      // Fresh instance each connect
+      v = new VerisenseBleDevice({
+        hardwareIdentifier: "VERISENSE_PULSE_PLUS",
+        stripStreamCrc: true,
+        verifyStreamCrc: false
+      });
+      configureAccelOnly(v);
+
+      v.on("disconnected", () => {
+        log("disconnected");
+        setStatus("disconnected");
+        btnDisconnect.disabled = true;
+        btnStart.disabled = true;
+        btnStop.disabled = true;
+        btnConnect.disabled = false;
+      });
+
+      v.on("data", (pkt) => {
+        if (pkt.sensorId !== 2) return; // accel1 only
+        accelPackets++;
+        if (accelPackets % 20 === 0) log(`accel pkt#${accelPackets}`, { tick_u24: pkt.tick_u24, crcOk: pkt.crcOk });
+        renderLatest(pkt);
+      });
+
+      // Manual connect using the already-selected BluetoothDevice
+      v.device = btDevice;
+      btDevice.addEventListener("gattserverdisconnected", () => {
+        v?.emit?.("disconnected", {});
+        v._mode = "idle";
+      });
+
+      setStatus("connecting...");
+      v.server = await btDevice.gatt.connect();
+      v.service = await v.server.getPrimaryService(VerisenseBleDevice.NUS_SERVICE);
+      v.tx = await v.service.getCharacteristic(VerisenseBleDevice.NUS_TX);
+      v.rx = await v.service.getCharacteristic(VerisenseBleDevice.NUS_RX);
+
+      await v.rx.startNotifications();
+      v.rx.addEventListener("characteristicvaluechanged", (ev) => {
+        const dv = ev.target.value;
+        const bytes = new Uint8Array(dv.buffer.slice(dv.byteOffset, dv.byteOffset + dv.byteLength));
+        v._onRx(bytes);
+      });
+
+      accelPackets = 0;
+      latestEl.textContent = "—";
+      log("connected:", { name: btDevice.name, id: btDevice.id });
+
+      setStatus("connected");
+      btnDisconnect.disabled = false;
+      btnStart.disabled = false;
+      btnStop.disabled = true;
+      btnConnect.disabled = true;
+    }
+
+    // --- UI actions ---
+
+    btnScan.onclick = async () => {
+      try {
+        // This IS the browser's BLE scan+pick UI (required by Web Bluetooth).
+        setStatus("scanning (chooser)...");
+        const namePrefix = namePrefixEl.value.trim();
+
+        const opts = namePrefix
+          ? { filters: [{ namePrefix }, { services: [VerisenseBleDevice.NUS_SERVICE] }], optionalServices: [VerisenseBleDevice.NUS_SERVICE] }
+          : { filters: [{ services: [VerisenseBleDevice.NUS_SERVICE] }], optionalServices: [VerisenseBleDevice.NUS_SERVICE] };
+
+        const dev = await navigator.bluetooth.requestDevice(opts);
+        upsertDeviceOption(dev);
+        log("authorized device:", { name: dev.name, id: dev.id });
+        setStatus("device selected");
+      } catch (e) {
+        log("scan/select error:", String(e?.message ?? e));
+        setStatus("idle");
+      }
+    };
+
+    btnRefreshKnown.onclick = async () => {
+      try {
+        if (!navigator.bluetooth.getDevices) {
+          log("getDevices() not supported in this browser yet.");
+          return;
+        }
+        const known = await navigator.bluetooth.getDevices();
+        log(`known devices: ${known.length}`);
+        for (const dev of known) upsertDeviceOption(dev);
+      } catch (e) {
+        log("refresh known error:", String(e?.message ?? e));
+      }
+    };
+
+    deviceSelect.onchange = () => {
+      btnConnect.disabled = !getSelectedDevice();
+    };
+
+    btnConnect.onclick = async () => {
+      try {
+        const dev = getSelectedDevice();
+        await connectUsingExistingDevice(dev);
+      } catch (e) {
+        log("connect error:", String(e?.message ?? e));
+        setStatus("error");
+      }
+    };
+
+    btnDisconnect.onclick = async () => {
+      try {
+        setStatus("disconnecting...");
+        await v?.disconnect?.();
+        setStatus("disconnected");
+        btnDisconnect.disabled = true;
+        btnStart.disabled = true;
+        btnStop.disabled = true;
+        btnConnect.disabled = false;
+      } catch (e) {
+        log("disconnect error:", String(e?.message ?? e));
+        setStatus("error");
+      }
+    };
+
+    btnStart.onclick = async () => {
+      try {
+        setStatus("starting stream...");
+        await v.startStreaming();
+        setStatus("streaming (accel view)");
+        btnStart.disabled = true;
+        btnStop.disabled = false;
+      } catch (e) {
+        log("start error:", String(e?.message ?? e));
+        setStatus("error");
+      }
+    };
+
+    btnStop.onclick = async () => {
+      try {
+        setStatus("stopping stream...");
+        await v.stopStreaming();
+        setStatus("connected");
+        btnStart.disabled = false;
+        btnStop.disabled = true;
+      } catch (e) {
+        log("stop error:", String(e?.message ?? e));
+        setStatus("error");
+      }
+    };
+
+    btnClear.onclick = () => { logEl.textContent = ""; };
+  </script>
+</body>
+</html>
