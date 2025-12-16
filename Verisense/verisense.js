@@ -27,6 +27,13 @@ function normalizeOperationalConfig(payload) {
   throw new Error("normalizeOperationalConfig: unsupported payload type");
 }
 
+function toHex(u8, max = 96) {
+  if (!u8) return "(null)";
+  const a = Array.from(u8.slice(0, max)).map(b => b.toString(16).padStart(2, "0")).join(" ");
+  return u8.length > max ? `${a} … (+${u8.length - max} bytes)` : a;
+}
+
+
 const OP_IDX = Object.freeze({
   GEN_CFG_0: 1,
   GEN_CFG_1: 2,
@@ -729,6 +736,111 @@ export class VerisenseBleDevice extends TinyEmitter {
   get gyroAccel2() { return this.sensors[3]; }
   get ppg() { return this.sensors[4]; }
 
+
+  _opSnapshotForSensor(id) {
+    const sid = Number(id);
+    switch (sid) {
+      case 1: // GSR
+        return {
+          gsrEnabled: this.gsr?.gsrEnabled,
+          battEnabled: this.gsr?.battEnabled,
+          gsrRangeSetting: this.gsr?.gsrRangeSetting,
+          hardwareIdentifier: this.gsr?.hardwareIdentifier
+        };
+      case 2: // LIS2DW12
+        return {
+          enabled: this.accel1?.enabled,
+          range: this.accel1?.range,
+          hz: this.accel1?.samplingRateHz
+        };
+      case 3: // LSM6DS3
+        return {
+          accEnabled: this.gyroAccel2?.accEnabled,
+          gyroEnabled: this.gyroAccel2?.gyroEnabled,
+          accRange: this.gyroAccel2?.accRange,
+          gyroRange: this.gyroAccel2?.gyroRange,
+          hz: this.gyroAccel2?.samplingRateHz
+        };
+      case 4: // PPG
+        return {
+          red: this.ppg?.red, ir: this.ppg?.ir, green: this.ppg?.green, blue: this.ppg?.blue,
+          adcResolutionIndex: this.ppg?.adcResolutionIndex,
+          hz: this.ppg?.samplingRateHz
+        };
+      default:
+        return {};
+    }
+  }
+
+  _applyOperationalConfigToSensors(op, { prefix = "[opcfg]" } = {}) {
+    for (const [id, sensor] of Object.entries(this.sensors ?? {})) {
+      const name = sensor?.constructor?.name ?? `Sensor#${id}`;
+      const fn = sensor?.applyOperationalConfig;
+      if (typeof fn !== "function") {
+        console.log(`${prefix} ${name} (id=${id}) - no applyOperationalConfig(), skipping.`);
+        continue;
+      }
+
+      const before = this._opSnapshotForSensor(id);
+      console.log(`${prefix} ${name} (id=${id}) BEFORE:`, before);
+      try {
+        fn.call(sensor, op);
+      } catch (e) {
+        console.warn(`${prefix} ${name} (id=${id}) applyOperationalConfig FAILED:`, e);
+        continue;
+      }
+      const after = this._opSnapshotForSensor(id);
+      console.log(`${prefix} ${name} (id=${id}) AFTER :`, after);
+    }
+  }
+
+  async _readAndApplyOperationalConfig({ prefix = null } = {}) {
+    const pfx = prefix ?? `[opcfg][${this._transportKind ?? "?"}]`;
+    try {
+      console.log(`${pfx} requesting readOperationalConfig (0x14)...`);
+      const t0 = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+
+      const rsp = await this.readOperationalConfig(); // { payload }
+      const t1 = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+      const dt = (t1 - t0).toFixed(1);
+
+      const payload = rsp?.payload;
+      console.log(`${pfx} response received in ${dt} ms`);
+      console.log(`${pfx} payload type:`, payload?.constructor?.name);
+      console.log(`${pfx} payload len :`, payload?.length);
+      console.log(`${pfx} payload head:`, toHex(payload, 96));
+
+      const op = normalizeOperationalConfig(payload);
+      console.log(`${pfx} normalized len :`, op?.length);
+      console.log(`${pfx} normalized head:`, toHex(op, 96));
+      console.log(`${pfx} normalized startsWith 0x5A:`, op?.[0] === 0x5A);
+
+      if (typeof OP_IDX !== "undefined") {
+        const safe = (idx) => (op && idx >= 0 && idx < op.length) ? op[idx] : null;
+        const logByte = (name, idx) => {
+          const v = safe(idx);
+          console.log(`${pfx} ${name} @${idx}:`, v == null ? "OUT_OF_RANGE" : `0x${v.toString(16).padStart(2, "0")} (${v})`);
+        };
+        logByte("GEN_CFG_0", OP_IDX.GEN_CFG_0);
+        logByte("ACCEL1_CFG_0", OP_IDX.ACCEL1_CFG_0);
+        logByte("ACCEL1_CFG_1", OP_IDX.ACCEL1_CFG_1);
+        logByte("ACCEL1_CFG_2", OP_IDX.ACCEL1_CFG_2);
+        logByte("GYRO_ACCEL2_CFG_4", OP_IDX.GYRO_ACCEL2_CFG_4);
+        logByte("GYRO_ACCEL2_CFG_5", OP_IDX.GYRO_ACCEL2_CFG_5);
+      }
+
+      this.operationalConfig = op;
+      this._applyOperationalConfigToSensors(op, { prefix: pfx });
+      this.emit("opConfig", { op });
+      console.log(`${pfx} done.`);
+      return op;
+    } catch (e) {
+      console.warn(`${pfx} FAILED:`, e);
+      this.emit("opConfigError", { error: String(e?.message ?? e), stack: e?.stack });
+      return null;
+    }
+  }
+
   async connect({ device = null, filters, optionalServices } = {}) {
   console.log("CONNECT");
 
@@ -758,87 +870,9 @@ export class VerisenseBleDevice extends TinyEmitter {
     });
 	console.log(`CONNECT`);
     this.emit("connected", { name: this.device.name, id: this.device.id });
-	
-	 // ---- NEW: read op config + apply it to sensors ----
-try {
-  console.log("[opcfg] requesting readOperationalConfig (0x14)...");
-  const t0 = performance.now();
+    // Read operational config + apply it to sensors (shared path for BLE + Serial)
+    await this._readAndApplyOperationalConfig({ prefix: "[opcfg]" });
 
-  const rsp = await this.readOperationalConfig(); // { payload }
-  const dt = (performance.now() - t0).toFixed(1);
-
-  const payload = rsp?.payload;
-  console.log(`[opcfg] response received in ${dt} ms`);
-  console.log("[opcfg] payload type:", payload?.constructor?.name);
-  console.log("[opcfg] payload len:", payload?.length);
-
-  // hex dump helper (inline)
-  const toHex = (u8, max = 96) => {
-    if (!u8) return "(null)";
-    const a = Array.from(u8.slice(0, max)).map(b => b.toString(16).padStart(2, "0")).join(" ");
-    return u8.length > max ? `${a} … (+${u8.length - max} bytes)` : a;
-  };
-
-  console.log("[opcfg] payload head:", toHex(payload, 96));
-
-  const op = normalizeOperationalConfig(payload);
-  console.log("[opcfg] normalized len:", op?.length);
-  console.log("[opcfg] normalized head:", toHex(op, 96));
-  console.log("[opcfg] normalized startsWith 0x5A:", op?.[0] === 0x5A);
-
-  // If you have OP_IDX defined, log the important bytes
-  if (typeof OP_IDX !== "undefined") {
-    const safe = (idx) => (op && idx >= 0 && idx < op.length) ? op[idx] : null;
-    const logByte = (name, idx) => {
-      const v = safe(idx);
-      console.log(`[opcfg] ${name} @${idx}:`, v == null ? "OUT_OF_RANGE" : `0x${v.toString(16).padStart(2,"0")} (${v})`);
-    };
-
-    logByte("GEN_CFG_0", OP_IDX.GEN_CFG_0);
-    logByte("ACCEL1_CFG_0", OP_IDX.ACCEL1_CFG_0);
-    logByte("ACCEL1_CFG_1", OP_IDX.ACCEL1_CFG_1);
-    logByte("ACCEL1_CFG_2", OP_IDX.ACCEL1_CFG_2);
-    logByte("GYRO_ACCEL2_CFG_4", OP_IDX.GYRO_ACCEL2_CFG_4);
-    logByte("GYRO_ACCEL2_CFG_5", OP_IDX.GYRO_ACCEL2_CFG_5);
-  } else {
-    console.warn("[opcfg] OP_IDX not defined; skipping per-field byte logging.");
-  }
-
-  this.operationalConfig = op;
-
-  // Before/after snapshots
-  console.log("[opcfg] accel1 BEFORE:", { range: this.accel1.range, hz: this.accel1.samplingRateHz, enabled: this.accel1.enabled });
-  this.accel1.applyOperationalConfig(op);
-  console.log("[opcfg] accel1 AFTER :", { range: this.accel1.range, hz: this.accel1.samplingRateHz, enabled: this.accel1.enabled });
-
-  console.log("[opcfg] gyroAccel2 BEFORE:", {
-    accEnabled: this.gyroAccel2.accEnabled,
-    gyroEnabled: this.gyroAccel2.gyroEnabled,
-    accRange: this.gyroAccel2.accRange,
-    gyroRange: this.gyroAccel2.gyroRange,
-    hz: this.gyroAccel2.samplingRateHz
-  });
-  if (typeof this.gyroAccel2.applyOperationalConfig === "function") {
-    this.gyroAccel2.applyOperationalConfig(op);
-  } else {
-    console.warn("[opcfg] gyroAccel2.applyOperationalConfig() is missing (did you paste it into the wrong class?)");
-  }
-  console.log("[opcfg] gyroAccel2 AFTER :", {
-    accEnabled: this.gyroAccel2.accEnabled,
-    gyroEnabled: this.gyroAccel2.gyroEnabled,
-    accRange: this.gyroAccel2.accRange,
-    gyroRange: this.gyroAccel2.gyroRange,
-    hz: this.gyroAccel2.samplingRateHz
-  });
-
-  this.emit("opConfig", { op });
-  console.log("[opcfg] done.");
-} catch (e) {
-  console.warn("[opcfg] FAILED:", e);
-  this.emit("opConfigError", { error: String(e?.message ?? e), stack: e?.stack });
-}
-
-	
     return true;
   }
 
@@ -884,33 +918,8 @@ try {
     this._startSerialReadLoop(this._serialAbort.signal);
 
     this.emit("connected", { kind: "serial" });
-
-    // Optionally: read operational config on connect (same as BLE)
-    try {
-      const rsp = await this.readOperationalConfig();
-      const op = normalizeOperationalConfig(rsp?.payload);
-	  
-	  const toHex = (u8, max = 96) => {
-	  if (!u8) return "(null)";
-        const a = Array.from(u8.slice(0, max)).map(b => b.toString(16).padStart(2,"0")).join(" ");
-        return u8.length > max ? `${a} … (+${u8.length - max} bytes)` : a;
-      };
-
-	  console.log("[opcfg][serial] payload type:", rsp?.payload?.constructor?.name);
-      console.log("[opcfg][serial] payload len :", rsp?.payload?.length); 
-      console.log("[opcfg][serial] payload head:", toHex(rsp?.payload, 96));
-      console.log("[opcfg][serial] normalized len :", op?.length);
-      console.log("[opcfg][serial] normalized head:", toHex(op, 96));
-
-      if (op) {
-        this.operationalConfig = op;
-        this.accel1?.applyOperationalConfig?.(op);
-        this.gyroAccel2?.applyOperationalConfig?.(op);
-        this.emit("opConfig", { op });
-      }
-    } catch (e) {
-      this.emit("opConfigError", { error: String(e?.message ?? e), stack: e?.stack });
-    }
+    // Read operational config + apply it to sensors (shared path for BLE + Serial)
+    await this._readAndApplyOperationalConfig({ prefix: "[opcfg][serial]" });
 
     return true;
   }
