@@ -684,6 +684,7 @@ export class VerisenseBleDevice extends TinyEmitter {
     super();
     this.hardwareIdentifier = hardwareIdentifier;
 	this._sync = null;
+    this._rxStreamBuf = new Uint8Array(0);
 
     // ---- transport ----
     // Default: BLE (Web Bluetooth). Optional: USB serial (Web Serial).
@@ -753,7 +754,7 @@ export class VerisenseBleDevice extends TinyEmitter {
     this.rx.addEventListener("characteristicvaluechanged", (ev) => {
       const v = ev.target.value;
       const bytes = new Uint8Array(v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength));
-      this._onRx(bytes);
+      this._feedStreamBytes(bytes)
     });
 	console.log(`CONNECT`);
     this.emit("connected", { name: this.device.name, id: this.device.id });
@@ -888,6 +889,19 @@ try {
     try {
       const rsp = await this.readOperationalConfig();
       const op = normalizeOperationalConfig(rsp?.payload);
+	  
+	  const toHex = (u8, max = 96) => {
+	  if (!u8) return "(null)";
+        const a = Array.from(u8.slice(0, max)).map(b => b.toString(16).padStart(2,"0")).join(" ");
+        return u8.length > max ? `${a} … (+${u8.length - max} bytes)` : a;
+      };
+
+	  console.log("[opcfg][serial] payload type:", rsp?.payload?.constructor?.name);
+      console.log("[opcfg][serial] payload len :", rsp?.payload?.length); 
+      console.log("[opcfg][serial] payload head:", toHex(rsp?.payload, 96));
+      console.log("[opcfg][serial] normalized len :", op?.length);
+      console.log("[opcfg][serial] normalized head:", toHex(op, 96));
+
       if (op) {
         this.operationalConfig = op;
         this.accel1?.applyOperationalConfig?.(op);
@@ -921,7 +935,7 @@ try {
             while (!signal.aborted) {
               const { value, done } = await reader.read();
               if (done) break;
-              if (value && value.length) this._onRx(new Uint8Array(value));
+              if (value && value.length) this._feedStreamBytes(new Uint8Array(value));
             }
           } finally {
             reader.releaseLock();
@@ -1372,6 +1386,63 @@ async _handleLoggedPayload(payloadU8) {
     this.emit("streamPacket", packet);
     this.emit("data", packet); // alias
   }
+  
+  _appendStreamBuf(chunk) {
+  const merged = new Uint8Array(this._rxStreamBuf.length + chunk.length);
+  merged.set(this._rxStreamBuf, 0);
+  merged.set(chunk, this._rxStreamBuf.length);
+  this._rxStreamBuf = merged;
+}
+
+_feedStreamBytes(chunk) {
+  this._appendStreamBuf(chunk);
+
+  while (true) {
+    if (this._rxStreamBuf.length < 3) return;
+
+    const hdr = this._rxStreamBuf[0];
+    const len = (this._rxStreamBuf[1] | (this._rxStreamBuf[2] << 8)) >>> 0;
+
+    // consume header
+    if (len === 0) {
+      this._rxStreamBuf = this._rxStreamBuf.slice(3);
+
+      // EOS marker for sync
+      if (this._mode === "logged" && hdr === DATA_EOS_HDR) {
+        if (this.debugSync) console.log("[sync] EOS received (stream parser). Finishing.");
+        this._finishSync();
+      }
+      // streaming keepalive 0x4A 00 00: ignore
+      continue;
+    }
+
+    if (this._rxStreamBuf.length < 3 + len) return;
+
+    const payload = this._rxStreamBuf.slice(3, 3 + len);
+    this._rxStreamBuf = this._rxStreamBuf.slice(3 + len);
+
+    // Now dispatch exactly like your “payload complete” section:
+    if (this._mode === "logged") {
+      this._loggedChain = (this._loggedChain ?? Promise.resolve())
+        .then(() => this._handleLoggedPayload(payload))
+        .catch((e) => this._abortSync(e));
+      continue;
+    }
+
+    if (this._mode === "streaming") {
+      this._handleStreamingPayload(payload);
+      continue;
+    }
+
+    const pending = this._pending;
+    this._pending = null;
+    if (this._mode === "command") this._mode = "idle";
+    if (pending) pending.resolve({ payload });
+    this.emit("commandPayload", { payload });
+  }
+}
+
+  
 }
 
 
