@@ -58,8 +58,16 @@
       </div>
     </div>
   </div>
+<div class="card">
+  <h3>Accel plot (X/Y/Z)</h3>
+  <canvas id="plot" width="700" height="260" style="width:100%; background:#111; border-radius:12px;"></canvas>
+  <small id="plotInfo"></small>
+</div>
 
   <script type="module">
+  
+  
+  
     import { VerisenseBleDevice } from "./verisense.js";
 	console.log('helloworld'); // <— add this
     const $ = (id) => document.getElementById(id);
@@ -77,6 +85,103 @@
 
     const deviceSelect = $("deviceSelect");
     const namePrefixEl = $("namePrefix");
+const plotCanvas = $("plot");
+const plotInfoEl = $("plotInfo");
+const ctx = plotCanvas.getContext("2d");
+
+// rolling buffer (last N seconds)
+const PLOT_SECONDS = 8;
+let accelHz = 51.2;
+let maxPoints = Math.ceil(PLOT_SECONDS * accelHz);
+
+// ring buffers
+let ax = new Float32Array(maxPoints);
+let ay = new Float32Array(maxPoints);
+let az = new Float32Array(maxPoints);
+let aWrite = 0;
+let aCount = 0;
+
+function resetPlotBuffers(hz = 51.2) {
+  accelHz = hz;
+  maxPoints = Math.ceil(PLOT_SECONDS * accelHz);
+  ax = new Float32Array(maxPoints);
+  ay = new Float32Array(maxPoints);
+  az = new Float32Array(maxPoints);
+  aWrite = 0;
+  aCount = 0;
+}
+
+function pushAccelSample(cal3) {
+  ax[aWrite] = cal3[0];
+  ay[aWrite] = cal3[1];
+  az[aWrite] = cal3[2];
+  aWrite = (aWrite + 1) % maxPoints;
+  aCount = Math.min(aCount + 1, maxPoints);
+}
+
+function drawSeries(series, minY, maxY, w, h, color) {
+  if (aCount < 2) return;
+  const span = maxY - minY || 1;
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+
+  for (let i = 0; i < aCount; i++) {
+    const idx = (aWrite - aCount + i + maxPoints) % maxPoints;
+    const x = (i / (aCount - 1)) * (w - 1);
+    const y = h - 1 - ((series[idx] - minY) / span) * (h - 1);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+let plotRaf = null;
+function requestPlotRedraw() {
+  if (plotRaf) return;
+  plotRaf = requestAnimationFrame(() => {
+    plotRaf = null;
+
+    const w = plotCanvas.width;
+    const h = plotCanvas.height;
+
+    // background
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = "#111";
+    ctx.fillRect(0, 0, w, h);
+
+    if (aCount < 2) return;
+
+    // autoscale using all 3 axes
+    let minY = Infinity, maxY = -Infinity;
+    for (let i = 0; i < aCount; i++) {
+      const idx = (aWrite - aCount + i + maxPoints) % maxPoints;
+      minY = Math.min(minY, ax[idx], ay[idx], az[idx]);
+      maxY = Math.max(maxY, ax[idx], ay[idx], az[idx]);
+    }
+    // small padding
+    const pad = (maxY - minY) * 0.05 || 0.1;
+    minY -= pad; maxY += pad;
+
+    // draw a midline
+    ctx.strokeStyle = "#333";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, h / 2);
+    ctx.lineTo(w, h / 2);
+    ctx.stroke();
+
+    // plot X/Y/Z
+    drawSeries(ax, minY, maxY, w, h, "#4cc9f0"); // X
+    drawSeries(ay, minY, maxY, w, h, "#f72585"); // Y
+    drawSeries(az, minY, maxY, w, h, "#b8f2e6"); // Z
+
+    if (plotInfoEl) {
+      plotInfoEl.textContent = `points: ${aCount}/${maxPoints} | scale: ${minY.toFixed(2)} .. ${maxY.toFixed(2)} m/s²`;
+    }
+  });
+}
 
     function log(...args) {
       const s = args.map(a => (typeof a === "string" ? a : JSON.stringify(a, null, 2))).join(" ");
@@ -208,7 +313,6 @@
       btnConnect.disabled = false;
     });
 
-let accelPackets = 0;
 let accelSamples = 0;
 
 // rolling rate calc
@@ -237,7 +341,7 @@ v.on("data", (pkt) => {
 
   // update rates every ~500ms
   const now = performance.now();
-  if (now - t0 >= 500) {
+  if (now - t0 >= 10) {
     const dt = (now - t0) / 1000;
     const pps = (accelPackets - p0) / dt;
     const sps = (accelSamples - s0) / dt;
@@ -252,7 +356,11 @@ v.on("data", (pkt) => {
     p0 = accelPackets;
     s0 = accelSamples;
   }
+  for (const s of pkt.decoded) {
+    if (s?.cal) pushAccelSample(s.cal);     // only X/Y/Z (no timestamps)
+  }
 
+  requestPlotRedraw();
   scheduleRender(pkt);
 });
 
