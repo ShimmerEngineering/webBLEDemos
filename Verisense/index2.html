@@ -86,7 +86,9 @@
     const btnStop = $("btnStop");
     const btnClear = $("btnClear");
 
-    const deviceSelect = $("deviceSelect");
+    
+    const btnSync = $("btnSync");
+const deviceSelect = $("deviceSelect");
     const namePrefixEl = $("namePrefix");
 const plotCanvas = $("plot");
 const plotInfoEl = $("plotInfo");
@@ -258,6 +260,71 @@ function requestPlotRedraw() {
       `;
     }
 
+// Wire the *same* event handlers regardless of transport (BLE vs USB serial)
+function wireDeviceHandlers(dev) {
+  // disconnected handler
+  dev.on("disconnected", () => {
+    log("disconnected");
+    setStatus("disconnected");
+    btnDisconnect.disabled = true;
+    btnStart.disabled = true;
+    btnStop.disabled = true;
+    btnConnect.disabled = false;
+    btnSync.disabled = true;
+  });
+
+  // streaming + plotting handler
+  let accelSamples = 0;
+
+  // rolling rate calc
+  let t0 = performance.now();
+  let p0 = 0, s0 = 0;
+
+  // UI throttle
+  let pendingPkt = null;
+  let rafId = null;
+
+  function scheduleRender(pkt) {
+    pendingPkt = pkt;
+    if (rafId) return;
+    rafId = requestAnimationFrame(() => {
+      rafId = null;
+      if (pendingPkt) renderLatest(pendingPkt);
+    });
+  }
+
+  dev.on("data", (pkt) => {
+    if (pkt.sensorId !== 2) return;
+
+    accelPackets++;
+    const nSamples = Array.isArray(pkt.decoded) ? pkt.decoded.length : 0;
+    accelSamples += nSamples;
+
+    // update rates every ~500ms
+    const now = performance.now();
+    if (now - t0 >= 500) {
+      const dt = (now - t0) / 1000;
+      const pps = (accelPackets - p0) / dt;
+      const sps = (accelSamples - s0) / dt;
+      console.log(`[rate] pps=${pps.toFixed(1)} sps=${sps.toFixed(1)} samples/packet=${(pps > 0 ? (sps / pps) : 0).toFixed(1)}`);
+
+      t0 = now;
+      p0 = accelPackets;
+      s0 = accelSamples;
+    }
+
+    for (const s of (pkt.decoded ?? [])) {
+      if (s?.cal) pushAccelSample(s.cal);
+    }
+    requestPlotRedraw();
+    scheduleRender(pkt);
+  });
+
+  // Optional: surface your op-config logs to the on-page log too
+  dev.on("opConfig", ({ op }) => log("opConfig received", { len: op?.length, head: Array.from(op?.slice?.(0, 16) ?? []) }));
+  dev.on("opConfigError", (e) => log("opConfigError", e));
+}
+
     // --- UI actions ---
 
     btnScan.onclick = async () => {
@@ -312,74 +379,10 @@ function requestPlotRedraw() {
     });
     configureAccelOnly(v);
 
-    // (re)wire listeners
-    v.on("disconnected", () => {
-      log("disconnected");
-      setStatus("disconnected");
-      btnDisconnect.disabled = true;
-      btnStart.disabled = true;
-      btnStop.disabled = true;
-      btnConnect.disabled = false;
-	  btnSync.disabled = true;
-    });
+    // (re)wire listeners (BLE and USB serial use the same handlers)
+    wireDeviceHandlers(v);
 
-let accelSamples = 0;
-
-// rolling rate calc
-let t0 = performance.now();
-let p0 = 0, s0 = 0;
-
-// UI throttle
-let pendingPkt = null;
-let rafId = null;
-
-function scheduleRender(pkt) {
-  pendingPkt = pkt;
-  if (rafId) return;
-  rafId = requestAnimationFrame(() => {
-    rafId = null;
-    if (pendingPkt) renderLatest(pendingPkt);
-  });
-}
-
-v.on("data", (pkt) => {
-  if (pkt.sensorId !== 2) return;
-
-  accelPackets++;
-  const nSamples = Array.isArray(pkt.decoded) ? pkt.decoded.length : 0;
-  accelSamples += nSamples;
-
-  // update rates every ~500ms
-  const now = performance.now();
-  if (now - t0 >= 10) {
-    const dt = (now - t0) / 1000;
-    const pps = (accelPackets - p0) / dt;
-    const sps = (accelSamples - s0) / dt;
-
-    // show both, so you don't confuse packets with samples
-    // (add a div in your UI or just log it)
-    // e.g. latestEl or status line:
-    // statusEl.textContent = `Status: streaming | pps=${pps.toFixed(1)} | sps=${sps.toFixed(1)} | spp=${(sps/pps).toFixed(1)}`;
-    console.log(`[rate] pps=${pps.toFixed(1)} sps=${sps.toFixed(1)} samples/packet=${(pps>0?(sps/pps):0).toFixed(1)}`);
-
-    t0 = now;
-    p0 = accelPackets;
-    s0 = accelSamples;
-  }
-  for (const s of pkt.decoded) {
-    if (s?.cal) pushAccelSample(s.cal);     // only X/Y/Z (no timestamps)
-  }
-
-  requestPlotRedraw();
-  scheduleRender(pkt);
-});
-
-
-    // Optional: surface your op-config logs to the on-page log too
-    v.on("opConfig", ({ op }) => log("opConfig received", { len: op?.length, head: Array.from(op?.slice?.(0, 16) ?? []) }));
-    v.on("opConfigError", (e) => log("opConfigError", e));
-
-    setStatus("connecting...");
+setStatus("connecting...");
     accelPackets = 0;
     latestEl.textContent = "—";
 
@@ -413,15 +416,8 @@ v.on("data", (pkt) => {
         });
         configureAccelOnly(v);
 
-        // (re)wire listeners (same as BLE)
-        v.on("disconnected", () => {
-          log("disconnected");
-          setStatus("disconnected");
-          btnDisconnect.disabled = true;
-          btnStart.disabled = true;
-          btnStop.disabled = true;
-          btnConnect.disabled = false;
-        });
+        // (re)wire listeners (BLE and USB serial use the same handlers)
+        wireDeviceHandlers(v);
 
         // Reuse your data handler (already defined in BLE connect handler)
         // If you want separate counters per transport, reset them here:
@@ -434,7 +430,8 @@ v.on("data", (pkt) => {
 
         log("connected (USB serial)");
         setStatus("connected (USB serial)");
-        btnDisconnect.disabled = false;
+                btnSync.disabled = false;
+btnDisconnect.disabled = false;
         btnStart.disabled = false;
         btnStop.disabled = true;
         btnConnect.disabled = false; // BLE connect can remain available
