@@ -86,6 +86,28 @@ const OP_IDX = Object.freeze({
   PPG_DAC4_CROSSTALK: 70,
   PROX_AGC_MODE: 71
 });
+
+const READ_DATA_REQ = new Uint8Array([0x12, 0x00, 0x00]);
+const DATA_ACK      = new Uint8Array([0x82, 0x00, 0x00]);
+const DATA_NACK     = new Uint8Array([0x72, 0x00, 0x00]);
+const DATA_EOS_HDR  = 0x42;
+
+function u16le_at(bytes, off) {
+  return (bytes[off] | (bytes[off + 1] << 8)) >>> 0;
+}
+
+function getOriginalCrcLE(payload) {
+  const n = payload.length;
+  return (payload[n - 2] | (payload[n - 1] << 8)) >>> 0;
+}
+
+function computeCrcLikeCSharp(payload) {
+  // C# ComputeCRC iterates to length-2 (excludes CRC bytes)
+  const n = payload.length;
+  const data = payload.subarray(0, n - 2);
+  return crc16_ccitt_false(data);
+}
+
 // safe byte getter
 function b(op, idx) {
   if (!op || idx == null) return null;
@@ -661,13 +683,17 @@ export class VerisenseBleDevice extends TinyEmitter {
   } = {}) {
     super();
     this.hardwareIdentifier = hardwareIdentifier;
-
+	this._sync = null;
     this.device = null;
     this.server = null;
     this.service = null;
     this.tx = null;
     this.rx = null;
+	this.debugSync = true;
+	this._syncRxCount = 0;
+	this._syncPayloadCount = 0;
 
+    this._loggedChain = Promise.resolve();
     this._mode = "idle"; // "idle" | "streaming" | "command"
     this._newPayload = true;
     this._expectedLen = 0;
@@ -813,6 +839,106 @@ try {
     this.emit("disconnected", {});
   }
 
+async transferLoggedData({
+  fileHandle = null,          // FileSystemFileHandle (Chromium) if you want true streaming-to-disk
+  timeoutMs = 5000,
+  maxNack = 5,
+  maxCrcNack = 5,
+  onProgress = null,          // ({ payloadIndex, bytesWritten, crcOk }) => void
+} = {}) {
+  if (!this.rx || !this.tx) throw new Error("Not connected");
+  if (this._mode === "streaming") throw new Error("Stop streaming before TransferLoggedData");
+  if (this._mode === "logged") throw new Error("Already syncing logged data");
+
+  // ---- writer setup ----
+  let writable = null;
+  const chunks = []; // fallback if no fileHandle
+  let bytesWritten = 0;
+
+  if (fileHandle) {
+    // Chromium/Edge: real incremental write to disk
+    writable = await fileHandle.createWritable();
+  }
+
+  // ---- init sync session ----
+  this._mode = "logged";
+  this._resetAssembler();
+
+  if (this.debugSync) {
+	console.log("[sync] START transferLoggedData", {
+	hasFileHandle: !!fileHandle,
+	timeoutMs, maxNack, maxCrcNack,
+	mode: this._mode
+	});
+  }
+  this._syncRxCount = 0;
+  this._syncPayloadCount = 0;
+
+
+  const sync = {
+    receiving: true,
+    newPayload: true,
+    lastReply: "NONE",
+    nackCount: 0,
+    nackCrcCount: 0,
+    lastRxAt: Date.now(),
+    timeoutMs,
+    bytesWritten: 0,
+    resolve: null,
+    reject: null,
+    timer: null,
+    writable,
+    chunks,
+    onProgress,
+  };
+  this._sync = sync;
+
+  const donePromise = new Promise((resolve, reject) => { sync.resolve = resolve; sync.reject = reject; });
+
+  // ---- timeout loop (C# ProcessDataTimeout equivalent) ----
+  sync.timer = setInterval(async () => {
+    if (!this._sync?.receiving) return;
+    const age = Date.now() - this._sync.lastRxAt;
+    if (age < this._sync.timeoutMs) return;
+
+    try {
+      if (this._sync.lastReply === "NONE") {
+        // resend read request
+        await this.writeBytes(READ_DATA_REQ);
+      } else {
+        // force resend of last by NACK
+        await this.writeBytes(DATA_NACK);
+        this._sync.nackCount++;
+        this._sync.lastReply = "NACK";
+        if (this._sync.nackCount >= maxNack) throw new Error("Too many NACK timeouts");
+      }
+      this._sync.lastRxAt = Date.now();
+    } catch (e) {
+      this._abortSync(e);
+    }
+  }, Math.max(250, Math.floor(timeoutMs / 2)));
+
+  // ---- kick it off ----
+  await this.writeBytes(READ_DATA_REQ);
+
+  // ---- wait ----
+  const result = await donePromise;
+
+  // close writer if used
+  if (writable) {
+    await writable.close();
+  }
+
+  // if fallback: create blob
+  if (!fileHandle) {
+    const blob = new Blob(chunks, { type: "application/octet-stream" });
+    return { ...result, blob };
+  }
+
+  return result;
+}
+
+
   // ---------- requests ----------
   async writeBytes(bytes) {
     const u8 = (bytes instanceof Uint8Array) ? bytes : new Uint8Array(bytes);
@@ -885,6 +1011,78 @@ try {
   }
 
   // ---------- RX parsing / reassembly ----------
+  _abortSync(err) {
+  const s = this._sync;
+  if (!s) return;
+  s.receiving = false;
+  if (s.timer) clearInterval(s.timer);
+  this._sync = null;
+  this._mode = "idle";
+  s.reject(err instanceof Error ? err : new Error(String(err)));
+}
+
+_finishSync() {
+  const s = this._sync;
+  if (!s) return;
+  s.receiving = false;
+  if (s.timer) clearInterval(s.timer);
+  const bytesWritten = s.bytesWritten;
+  this._sync = null;
+  this._mode = "idle";
+  s.resolve({ ok: true, bytesWritten });
+}
+
+async _handleLoggedPayload(payloadU8) {
+  this._syncPayloadCount++;
+
+  if (this.debugSync) {
+    const head = Array.from(payloadU8.slice(0, 10)).map(b => b.toString(16).padStart(2,"0")).join(" ");
+    console.log(`[sync][payload#${this._syncPayloadCount}] len=${payloadU8.length} head=${head}`);
+  }
+	
+  const s = this._sync;
+  if (!s) return;
+
+  // payloadU8 includes CRC at end
+  const computed = computeCrcLikeCSharp(payloadU8);
+  const original = getOriginalCrcLE(payloadU8);
+  const crcOk = (computed === original);
+
+  // payloadIndex is first 2 bytes (little endian) in your C# bin stream
+  const payloadIndex = u16le_at(payloadU8, 0);
+
+  if (!crcOk) {
+    s.lastReply = "NACK";
+    s.nackCrcCount++;
+    await this.writeBytes(DATA_NACK);
+
+    if (s.nackCrcCount >= 5) {
+      this._abortSync(new Error("Too many CRC failures (NACKCRCcounter>=5)"));
+    }
+
+    if (s.onProgress) s.onProgress({ payloadIndex, bytesWritten: s.bytesWritten, crcOk: false });
+    return;
+  }
+
+  // write to bin (either disk stream or memory)
+  if (s.writable) {
+    await s.writable.write(payloadU8);
+  } else {
+    s.chunks.push(payloadU8.slice()); // copy
+  }
+  s.bytesWritten += payloadU8.length;
+
+  // ACK and reset counters (like C# FinishPayload)
+  s.lastReply = "ACK";
+  s.nackCount = 0;
+  s.nackCrcCount = 0;
+  await this.writeBytes(DATA_ACK);
+
+  if (s.onProgress) s.onProgress({ payloadIndex, bytesWritten: s.bytesWritten, crcOk: true });
+}
+
+  
+  
   _resetAssembler() {
     this._newPayload = true;
     this._expectedLen = 0;
@@ -899,35 +1097,84 @@ try {
   }
 
   _onRx(bytes) {
-    // Streaming special case seen in C#: 0x4A 00 00 (length=0), ignore.
+  try {
+    if (this._mode === "logged" && this.debugSync) {
+      this._syncRxCount++;
+      if (this._syncRxCount <= 25 || (this._syncRxCount % 100) === 0) {
+        const head = Array.from(bytes.slice(0, 8)).map(b => b.toString(16).padStart(2,"0")).join(" ");
+        console.log(`[sync][rx#${this._syncRxCount}] len=${bytes.length} head=${head}`, {
+        newPayload: this._newPayload,
+        expectedLen: this._expectedLen,
+        bufLen: this._buf?.length ?? 0,
+        mode: this._mode
+    });
+  }
+}
+
+	  
+    // If you're in logged-sync mode, refresh timeout watchdog on *any* RX
+    if (this._mode === "logged" && this._sync) this._sync.lastRxAt = Date.now();
+
+    // Logged sync EOS marker: 0x42 00 00
+    if (this._mode === "logged" && bytes.length === 3 && bytes[0] === DATA_EOS_HDR) {
+	  if (this.debugSync) console.log("[sync] EOS received (0x42 00 00). Finishing. bytesWritten=", this._sync?.bytesWritten);
+      this._resetAssembler();
+      this._finishSync();
+      return;
+    }
+
+    // Streaming special case: 0x4A 00 00 (len=0) seen sometimes
     if (this._mode === "streaming" && bytes.length === 3 && bytes[0] === 0x4A) return;
 
     // Assemble: first chunk has [hdr][lenLE16] then payload bytes; later chunks are raw continuation.
     if (this._newPayload) {
-      if (bytes.length < 3) return; // ultra-rare; ignore
+      if (bytes.length < 3) return;
       const len = u16le(bytes[1], bytes[2]);
       this._expectedLen = len;
       this._buf = new Uint8Array(0);
+
       if (bytes.length > 3) this._appendBuf(bytes.slice(3));
       this._newPayload = false;
     } else {
       this._appendBuf(bytes);
     }
 
-    if (this._buf.length >= this._expectedLen) {
-      const payload = this._buf.slice(0, this._expectedLen);
-      // reset for next packet
-      this._resetAssembler();
+    if (this._buf.length < this._expectedLen) return;
 
-      if (this._mode === "streaming") {
-        this._handleStreamingPayload(payload);
-      } else {
-        // command payload complete
-        if (this._pending) this._pending.resolve({ payload });
-        this.emit("commandPayload", { payload });
-      }
+    const payload = this._buf.slice(0, this._expectedLen);
+    this._resetAssembler();
+
+    // --- LOGGED SYNC PAYLOADS ---
+    if (this._mode === "logged") {
+      // IMPORTANT: _handleLoggedPayload is async; serialize it.
+      this._loggedChain = (this._loggedChain ?? Promise.resolve())
+        .then(() => this._handleLoggedPayload(payload))
+        .catch((e) => this._abortSync(e));
+      return;
     }
+
+    // --- STREAMING PAYLOADS ---
+    if (this._mode === "streaming") {
+      this._handleStreamingPayload(payload);
+      return;
+    }
+
+    // --- COMMAND / IDLE PAYLOADS (THIS FIXES opcfg TIMEOUT) ---
+    const pending = this._pending;
+    this._pending = null;
+
+    if (this._mode === "command") this._mode = "idle";
+
+    if (pending) pending.resolve({ payload });
+    this.emit("commandPayload", { payload });
+
+  } catch (e) {
+    console.warn("[_onRx] error:", e);
+    // If logged sync is active, abort cleanly instead of leaving it wedged
+    if (this._mode === "logged") this._abortSync(e);
   }
+}
+
 
   _handleStreamingPayload(payload) {
     // payload starts with: [sensorId][tick u24][sensorPayload...][optional crc16]

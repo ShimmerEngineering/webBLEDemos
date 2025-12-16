@@ -40,6 +40,7 @@
     <div class="row">
       <button id="btnStart" disabled>Start streaming</button>
       <button id="btnStop" disabled>Stop streaming</button>
+	  <button id="btnSync" disabled>Sync logged data (.bin)</button>
       <span id="status">Status: idle</span>
     </div>
   </div>
@@ -188,6 +189,12 @@ function requestPlotRedraw() {
       logEl.textContent += s + "\n";
       logEl.scrollTop = logEl.scrollHeight;
     }
+	
+	if (!("showSaveFilePicker" in window)) {
+	  log("This browser doesn't support saving .bin directly to disk.");
+	  log("Use Chrome/Edge over https or http://localhost, or use an in-memory download fallback.");
+	}
+	
     function setStatus(s) { statusEl.textContent = `Status: ${s}`; }
 
     // Keep a map of devices we can connect to (authorized via chooser or getDevices)
@@ -311,6 +318,7 @@ function requestPlotRedraw() {
       btnStart.disabled = true;
       btnStop.disabled = true;
       btnConnect.disabled = false;
+	  btnSync.disabled = true;
     });
 
 let accelSamples = 0;
@@ -383,6 +391,7 @@ v.on("data", (pkt) => {
     btnStart.disabled = false;
     btnStop.disabled = true;
     btnConnect.disabled = true;
+	btnSync.disabled = false;
 
   } catch (e) {
     log("connect error:", String(e?.message ?? e));
@@ -400,6 +409,7 @@ v.on("data", (pkt) => {
         btnStart.disabled = true;
         btnStop.disabled = true;
         btnConnect.disabled = false;
+		btnSync.disabled = false;
       } catch (e) {
         log("disconnect error:", String(e?.message ?? e));
         setStatus("error");
@@ -413,6 +423,7 @@ v.on("data", (pkt) => {
         setStatus("streaming (accel view)");
         btnStart.disabled = true;
         btnStop.disabled = false;
+		btnSync.disabled = true;
       } catch (e) {
         log("start error:", String(e?.message ?? e));
         setStatus("error");
@@ -426,6 +437,7 @@ v.on("data", (pkt) => {
         setStatus("connected");
         btnStart.disabled = false;
         btnStop.disabled = true;
+		btnSync.disabled = false;
       } catch (e) {
         log("stop error:", String(e?.message ?? e));
         setStatus("error");
@@ -433,6 +445,54 @@ v.on("data", (pkt) => {
     };
 
     btnClear.onclick = () => { logEl.textContent = ""; };
+	
+	btnSync.onclick = async () => {
+  try {
+    if (!v) throw new Error("Not connected");
+
+    setStatus("syncing logged data...");
+    log("sync: choose output file...");
+
+    // Ask user where to save the .bin
+    const fileHandle = await window.showSaveFilePicker({
+      suggestedName: `verisense_${new Date().toISOString().replace(/[:.]/g, "-")}.bin`,
+      types: [{
+        description: "Verisense binary",
+        accept: { "application/octet-stream": [".bin"] }
+      }]
+    });
+
+    // Create a writable stream
+    const writable = await fileHandle.createWritable();
+
+    // (optional) hook progress events if you emit them
+    const offProg = v.on?.("syncProgress", (p) => {
+      // p could be { payloadIndex, bytesWritten, rateBps, ... }
+      log("sync progress:", p);
+    });
+
+    // Call your VerisenseBleDevice transfer method
+    // You implement this in verisense.js
+    await v.transferLoggedData({
+      writable,              // REQUIRED: where bytes go
+      verifyCrc: true,       // optional: match C# behavior
+      maxNacks: 5,           // optional: match C# behavior
+      maxCrcNacks: 5         // optional
+    });
+
+    await writable.close();
+    offProg?.();
+
+    setStatus("sync complete");
+    log("sync: complete ✅");
+  } catch (e) {
+    log("sync error:", String(e?.message ?? e));
+    console.warn(e);
+    setStatus("error");
+  }
+};
+
+	
   </script>
 </body>
 </html>
