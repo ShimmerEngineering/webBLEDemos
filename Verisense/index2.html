@@ -33,7 +33,8 @@
         <option value="">(none)</option>
       </select>
 
-      <button id="btnConnect" disabled>Connect</button>
+      <button id="btnConnect" disabled>Connect (BLE)</button>
+      <button id="btnConnectSerial">Connect USB (Serial)</button>
       <button id="btnDisconnect" disabled>Disconnect</button>
     </div>
 
@@ -80,6 +81,7 @@
     const btnRefreshKnown = $("btnRefreshKnown");
     const btnConnect = $("btnConnect");
     const btnDisconnect = $("btnDisconnect");
+    const btnConnectSerial = $("btnConnectSerial");
     const btnStart = $("btnStart");
     const btnStop = $("btnStop");
     const btnClear = $("btnClear");
@@ -399,6 +401,50 @@ v.on("data", (pkt) => {
     setStatus("error");
   }
     };
+
+    // --- USB Serial connect (Web Serial) ---
+    btnConnectSerial.onclick = async () => {
+      try {
+        // Fresh instance (same class; uses connectSerial())
+        v = new VerisenseBleDevice({
+          hardwareIdentifier: "VERISENSE_PULSE_PLUS",
+          stripStreamCrc: true,
+          verifyStreamCrc: false
+        });
+        configureAccelOnly(v);
+
+        // (re)wire listeners (same as BLE)
+        v.on("disconnected", () => {
+          log("disconnected");
+          setStatus("disconnected");
+          btnDisconnect.disabled = true;
+          btnStart.disabled = true;
+          btnStop.disabled = true;
+          btnConnect.disabled = false;
+        });
+
+        // Reuse your data handler (already defined in BLE connect handler)
+        // If you want separate counters per transport, reset them here:
+        accelPackets = 0;
+        latestEl.textContent = "—";
+
+        setStatus("connecting (USB serial)...");
+        // NOTE: requestPort() needs a user gesture; this click qualifies.
+        await v.connectSerial({ baudRate: 115200 });
+
+        log("connected (USB serial)");
+        setStatus("connected (USB serial)");
+        btnDisconnect.disabled = false;
+        btnStart.disabled = false;
+        btnStop.disabled = true;
+        btnConnect.disabled = false; // BLE connect can remain available
+      } catch (e) {
+        log("serial connect error:", String(e?.message ?? e));
+        console.warn(e);
+        setStatus("error");
+      }
+    };
+
 
     btnDisconnect.onclick = async () => {
       try {

@@ -684,6 +684,13 @@ export class VerisenseBleDevice extends TinyEmitter {
     super();
     this.hardwareIdentifier = hardwareIdentifier;
 	this._sync = null;
+
+    // ---- transport ----
+    // Default: BLE (Web Bluetooth). Optional: USB serial (Web Serial).
+    this._transportKind = null; // 'ble' | 'serial'
+    this.port = null;           // Web Serial port (if using serial)
+    this._serialAbort = null;   // AbortController for read loop
+
     this.device = null;
     this.server = null;
     this.service = null;
@@ -724,6 +731,8 @@ export class VerisenseBleDevice extends TinyEmitter {
   async connect({ device = null, filters, optionalServices } = {}) {
   console.log("CONNECT");
 
+
+    this._transportKind = "ble";
   const opts = {
     filters: filters ?? [{ services: [VerisenseBleDevice.NUS_SERVICE] }],
     optionalServices: optionalServices ?? [VerisenseBleDevice.NUS_SERVICE]
@@ -832,6 +841,111 @@ try {
     return true;
   }
 
+  // --- Web Serial (USB COM port) connect ---
+  // Usage:
+  //   const v = new VerisenseBleDevice(...);  // same protocol/core class
+  //   await v.connectSerial({ baudRate: 115200 });
+  //
+  // Note: Web Serial is Chromium-based browsers only (Chrome/Edge).
+  async connectSerial({
+    port = null,
+    baudRate = 115200,
+    dataBits = 8,
+    stopBits = 1,
+    parity = "none",
+    flowControl = "none",
+    filters = null // e.g. [{ usbVendorId: 0x1234, usbProductId: 0x5678 }]
+  } = {}) {
+    if (!("serial" in navigator)) {
+      throw new Error("Web Serial not supported in this browser. Use Chrome/Edge on HTTPS or http://localhost.");
+    }
+
+    // if already connected over BLE, disconnect first
+    if (this.device?.gatt?.connected) {
+      await this.disconnect();
+    }
+
+    this._transportKind = "serial";
+    this._mode = "idle";
+    this._resetAssembler();
+
+    // Port selection (must be called from a user gesture)
+    if (!port) {
+      const opts = filters ? { filters } : undefined;
+      port = await navigator.serial.requestPort(opts);
+    }
+    this.port = port;
+
+    await this.port.open({ baudRate, dataBits, stopBits, parity, flowControl });
+
+    // Kick off async read loop -> feeds _onRx()
+    this._serialAbort = new AbortController();
+    this._startSerialReadLoop(this._serialAbort.signal);
+
+    this.emit("connected", { kind: "serial" });
+
+    // Optionally: read operational config on connect (same as BLE)
+    try {
+      const rsp = await this.readOperationalConfig();
+      const op = normalizeOperationalConfig(rsp?.payload);
+      if (op) {
+        this.operationalConfig = op;
+        this.accel1?.applyOperationalConfig?.(op);
+        this.gyroAccel2?.applyOperationalConfig?.(op);
+        this.emit("opConfig", { op });
+      }
+    } catch (e) {
+      this.emit("opConfigError", { error: String(e?.message ?? e), stack: e?.stack });
+    }
+
+    return true;
+  }
+
+  async _serialWrite(u8) {
+    if (!this.port?.writable) throw new Error("Not connected");
+    const writer = this.port.writable.getWriter();
+    try {
+      await writer.write(u8);
+    } finally {
+      writer.releaseLock();
+    }
+  }
+
+  _startSerialReadLoop(signal) {
+    const port = this.port;
+    (async () => {
+      try {
+        while (port?.readable && !signal.aborted) {
+          const reader = port.readable.getReader();
+          try {
+            while (!signal.aborted) {
+              const { value, done } = await reader.read();
+              if (done) break;
+              if (value && value.length) this._onRx(new Uint8Array(value));
+            }
+          } finally {
+            reader.releaseLock();
+          }
+        }
+      } catch (e) {
+        if (!signal.aborted) console.warn("[serial] read loop error:", e);
+      } finally {
+        if (!signal.aborted) {
+          this._mode = "idle";
+          this.emit("disconnected", { kind: "serial" });
+        }
+      }
+    })();
+  }
+
+  async _serialDisconnect() {
+    try { this._serialAbort?.abort(); } catch {}
+    try { await this.port?.close?.(); } catch {}
+    this.port = null;
+    this._serialAbort = null;
+  }
+
+
   async disconnect() {
     try { if (this.rx) this.rx.stopNotifications?.(); } catch {}
     try { if (this.device?.gatt?.connected) this.device.gatt.disconnect(); } catch {}
@@ -846,7 +960,9 @@ async transferLoggedData({
   maxCrcNack = 5,
   onProgress = null,          // ({ payloadIndex, bytesWritten, crcOk }) => void
 } = {}) {
-  if (!this.rx || !this.tx) throw new Error("Not connected");
+  const bleOk = !!(this.rx && this.tx);
+  const serOk = !!(this.port?.readable && this.port?.writable);
+  if (!bleOk && !serOk) throw new Error("Not connected");
   if (this._mode === "streaming") throw new Error("Stop streaming before TransferLoggedData");
   if (this._mode === "logged") throw new Error("Already syncing logged data");
 
@@ -863,6 +979,7 @@ async transferLoggedData({
   // ---- init sync session ----
   this._mode = "logged";
   this._resetAssembler();
+  this._loggedChain = Promise.resolve();
 
   if (this.debugSync) {
 	console.log("[sync] START transferLoggedData", {
@@ -924,6 +1041,9 @@ async transferLoggedData({
   // ---- wait ----
   const result = await donePromise;
 
+  // Make sure any queued payload writes have finished before closing/flushing
+  await (this._loggedChain ?? Promise.resolve());
+
   // close writer if used
   if (writable) {
     await writable.close();
@@ -942,6 +1062,14 @@ async transferLoggedData({
   // ---------- requests ----------
   async writeBytes(bytes) {
     const u8 = (bytes instanceof Uint8Array) ? bytes : new Uint8Array(bytes);
+
+    // Serial transport
+    if (this._transportKind === "serial") {
+      await this._serialWrite(u8);
+      return;
+    }
+
+    // BLE transport (default)
     if (!this.tx) throw new Error("Not connected");
     // Prefer withoutResponse if available (matches your C#)
     if (this.tx.writeValueWithoutResponse) {
