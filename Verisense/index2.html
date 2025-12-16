@@ -453,7 +453,6 @@ v.on("data", (pkt) => {
     setStatus("syncing logged data...");
     log("sync: choose output file...");
 
-    // Ask user where to save the .bin
     const fileHandle = await window.showSaveFilePicker({
       suggestedName: `verisense_${new Date().toISOString().replace(/[:.]/g, "-")}.bin`,
       types: [{
@@ -462,35 +461,26 @@ v.on("data", (pkt) => {
       }]
     });
 
-    // Create a writable stream
-    const writable = await fileHandle.createWritable();
+    // IMPORTANT: let verisense.js createWritable + write + close
+    v.debugSync = true;
 
-    // (optional) hook progress events if you emit them
-    const offProg = v.on?.("syncProgress", (p) => {
-      // p could be { payloadIndex, bytesWritten, rateBps, ... }
-      log("sync progress:", p);
+    const res = await v.transferLoggedData({
+      fileHandle,
+      timeoutMs: 5000,
+      maxNack: 5,
+      maxCrcNack: 5,
+      onProgress: (p) => log("sync progress:", p),
     });
-
-    // Call your VerisenseBleDevice transfer method
-    // You implement this in verisense.js
-    await v.transferLoggedData({
-      writable,              // REQUIRED: where bytes go
-      verifyCrc: true,       // optional: match C# behavior
-      maxNacks: 5,           // optional: match C# behavior
-      maxCrcNacks: 5         // optional
-    });
-
-    await writable.close();
-    offProg?.();
 
     setStatus("sync complete");
-    log("sync: complete ✅");
+    log("sync: complete ✅", res);
   } catch (e) {
     log("sync error:", String(e?.message ?? e));
     console.warn(e);
     setStatus("error");
   }
 };
+
 
 	
   </script>

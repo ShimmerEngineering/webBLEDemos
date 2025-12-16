@@ -1063,6 +1063,9 @@ async _handleLoggedPayload(payloadU8) {
     if (s.onProgress) s.onProgress({ payloadIndex, bytesWritten: s.bytesWritten, crcOk: false });
     return;
   }
+  if (this.debugSync) {
+    console.log("[sync] writing...", { hasWritable: !!s.writable, payloadLen: payloadU8.length, bytesWrittenBefore: s.bytesWritten });
+  }
 
   // write to bin (either disk stream or memory)
   if (s.writable) {
