@@ -1522,6 +1522,8 @@ async _handleLoggedPayload(payloadU8) {
 }
 
 _feedStreamBytes(chunk) {
+  if (this._mode === "logged" && this._sync) this._sync.lastRxAt = Date.now();
+
   this._appendStreamBuf(chunk);
 
   while (true) {
