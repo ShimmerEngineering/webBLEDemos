@@ -986,23 +986,31 @@ try {
 
   _startSerialReadLoop(signal) {
     const port = this.port;
-    (async () => {
+
+    // Keep a reference so disconnect() can await/cancel cleanly.
+    this._serialReadLoopTask = (async () => {
+      let reader = null;
       try {
-        while (port?.readable && !signal.aborted) {
-          const reader = port.readable.getReader();
-          try {
-            while (!signal.aborted) {
-              const { value, done } = await reader.read();
-              if (done) break;
-              if (value && value.length) this._feedStreamBytes(new Uint8Array(value));
-            }
-          } finally {
-            reader.releaseLock();
-          }
+        if (!port?.readable) return;
+
+        // Create ONE reader and keep it until we're done.
+        // This avoids races where disconnect aborts, but the loop grabs a new reader lock anyway.
+        reader = port.readable.getReader();
+        this._serialReader = reader;
+
+        while (!signal.aborted) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (value && value.length) this._feedStreamBytes(new Uint8Array(value));
         }
       } catch (e) {
         if (!signal.aborted) console.warn("[serial] read loop error:", e);
       } finally {
+        try { reader?.releaseLock?.(); } catch {}
+        if (this._serialReader === reader) this._serialReader = null;
+        this._serialReadLoopTask = null;
+
+        // If we didn't abort (i.e. port dropped), emit disconnected here.
         if (!signal.aborted) {
           this._mode = "idle";
           this.emit("disconnected", { kind: "serial" });
@@ -1011,11 +1019,76 @@ try {
     })();
   }
 
-  async _serialDisconnect() {
-    try { this._serialAbort?.abort(); } catch {}
-    try { await this.port?.close?.(); } catch {}
+  async _serialDisconnect(reason = "user") {
+    const port = this.port;
+
+    const had = {
+      hasPort: !!port,
+      readableLocked: !!port?.readable?.locked,
+      writableLocked: !!port?.writable?.locked,
+      hasAbort: !!this._serialAbort,
+      hasReader: !!this._serialReader,
+      hasTask: !!this._serialReadLoopTask,
+    };
+    console.warn(`[serial] disconnect begin reason=${reason}`, had);
+
+    // 1) Stop the read loop (but abort alone doesn't unblock reader.read()).
+    try { this._serialAbort?.abort(); } catch (e) {
+      console.warn("[serial] abort error:", e);
+    }
+
+    // Helper: cancel the active reader (the ONLY reliable way to unblock reader.read()).
+    const cancelActiveReader = async () => {
+      const r = this._serialReader;
+      if (!r) return false;
+      try { await r.cancel(); } catch (e) { console.warn("[serial] reader.cancel error:", e); }
+      try { r.releaseLock(); } catch {}
+      if (this._serialReader === r) this._serialReader = null;
+      return true;
+    };
+
+    // 2) Cancel reader if we have it.
+    await cancelActiveReader();
+
+    // 2b) If readable is still locked but we don't have the reader ref yet, wait briefly.
+    if (port?.readable?.locked && !this._serialReader) {
+      for (let i = 0; i < 10; i++) {
+        await new Promise(r => setTimeout(r, 20));
+        if (await cancelActiveReader()) break;
+      }
+    }
+
+    // 3) Wait a moment for the read loop to unwind and release any remaining locks.
+    try {
+      const task = this._serialReadLoopTask;
+      if (task) {
+        await Promise.race([task, new Promise(r => setTimeout(r, 750))]);
+      }
+    } catch {}
+
+    // 4) Best-effort: abort any pending writes if a writer lock is held.
+    try {
+      if (port?.writable?.locked) {
+        const w = port.writable.getWriter();
+        try { await w.abort?.(); } catch {}
+        try { w.releaseLock(); } catch {}
+      }
+    } catch {}
+
+    // 5) Now close the port. If readable/writable is still locked, Chromium throws:
+    //    "Cannot cancel a locked stream"
+    try {
+      await port?.close?.();
+    } catch (e) {
+      console.warn("[serial] port.close failed (readable/writable still locked)", e);
+    }
+
     this.port = null;
     this._serialAbort = null;
+    this._serialReader = null;
+    this._serialReadLoopTask = null;
+
+    console.warn(`[serial] disconnect done reason=${reason}`);
   }
 
 // Unified disconnect for BLE + Web Serial.
@@ -1035,7 +1108,8 @@ async disconnect({ reason = null } = {}) {
 
   // Tear down transport
   if (this._transportKind === "serial") {
-    try { await this._serialDisconnect(); } catch {}
+    try { await this._serialDisconnect(reason || "user");
+    } catch {}
   } else {
     try { if (this.rx) await this.rx.stopNotifications?.(); } catch {}
     try { if (this._onGattDisconnected && this.device) this.device.removeEventListener("gattserverdisconnected", this._onGattDisconnected); } catch {}
