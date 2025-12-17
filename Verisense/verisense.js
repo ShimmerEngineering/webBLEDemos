@@ -1021,7 +1021,7 @@ async disconnect({ reason = null } = {}) {
 
 async transferLoggedData({
   fileHandle = null,          // FileSystemFileHandle (Chromium) if you want true streaming-to-disk
-  timeoutMs = 10000,
+  timeoutMs = 1000,
   maxNack = 5,
   maxCrcNack = 5,
   onProgress = null,          // ({ payloadIndex, bytesWritten, crcOk }) => void
@@ -1087,10 +1087,11 @@ async transferLoggedData({
     try {
       if (this._sync.lastReply === "NONE") {
         // resend read request
-        await this.writeBytes(READ_DATA_REQ);
+        await this.writeBytes(READ_DATA_REQ, { withResponse: true });
       } else {
         // force resend of last by NACK
-        await this.writeBytes(DATA_NACK);
+		this._clearSyncRxBuffers("timeout-nack");
+		await this.writeBytes(DATA_NACK);
         this._sync.nackCount++;
         this._sync.lastReply = "NACK";
         if (this._sync.nackCount >= maxNack) throw new Error("Too many NACK timeouts");
@@ -1102,7 +1103,7 @@ async transferLoggedData({
   }, Math.max(250, Math.floor(timeoutMs / 2)));
 
   // ---- kick it off ----
-  await this.writeBytes(READ_DATA_REQ);
+  await this.writeBytes(READ_DATA_REQ, { withResponse: true });
 
   // ---- wait ----
   const result = await donePromise;
@@ -1126,7 +1127,7 @@ async transferLoggedData({
 
 
   // ---------- requests ----------
-  async writeBytes(bytes) {
+  async writeBytes(bytes, { withResponse = false } = {}) {
     const u8 = (bytes instanceof Uint8Array) ? bytes : new Uint8Array(bytes);
 
     // Serial transport
@@ -1137,7 +1138,14 @@ async transferLoggedData({
 
     // BLE transport (default)
     if (!this.tx) throw new Error("Not connected");
-    // Prefer withoutResponse if available (matches your C#)
+
+    // For sync/control frames (ACK/NACK/REQ), use write-with-response to get radio-level flow control.
+    if (withResponse) {
+      await this.tx.writeValue(u8);
+      return;
+    }
+
+    // Bulk/normal writes can use withoutResponse if available (lower latency).
     if (this.tx.writeValueWithoutResponse) {
       await this.tx.writeValueWithoutResponse(u8);
     } else {
@@ -1246,9 +1254,10 @@ async _handleLoggedPayload(payloadU8) {
   const payloadIndex = u16le_at(payloadU8, 0);
 
   if (!crcOk) {
-    s.lastReply = "NACK";
-    s.nackCrcCount++;
-    await this.writeBytes(DATA_NACK);
+	  s.lastReply = "NACK";
+	  s.nackCrcCount++;
+	  this._clearSyncRxBuffers("crc-nack");
+	  await this.writeBytes(DATA_NACK);
 
     if (s.nackCrcCount >= 5) {
       this._abortSync(new Error("Too many CRC failures (NACKCRCcounter>=5)"));
@@ -1273,7 +1282,7 @@ async _handleLoggedPayload(payloadU8) {
   s.lastReply = "ACK";
   s.nackCount = 0;
   s.nackCrcCount = 0;
-  await this.writeBytes(DATA_ACK);
+  await this.writeBytes(DATA_ACK, { withResponse: true });
 
   if (s.onProgress) s.onProgress({ payloadIndex, bytesWritten: s.bytesWritten, crcOk: true });
 }
@@ -1327,6 +1336,21 @@ async _handleLoggedPayload(payloadU8) {
     if (this._newPayload) {
       if (bytes.length < 3) return;
       const len = u16le(bytes[1], bytes[2]);
+
+      // Sanity guard: if we ever get desynced (dropped/extra byte), we'll start
+      // interpreting random bytes as [hdr][lenLE16]. Bail out and resync.
+      const MAX_FRAME = 40000; // expected logged frames are ~32k; keep a little headroom
+      if (len < 0 || len > MAX_FRAME) {
+        console.warn("[rx] Implausible frame length; resyncing", { hdr: bytes[0], len });
+        this._resetAssembler();
+        if (bytes.length > 1) {
+          const rest = bytes.slice(1);
+          const feed = () => this._onRx(rest);
+          (typeof queueMicrotask === "function") ? queueMicrotask(feed) : Promise.resolve().then(feed);
+        }
+        return;
+      }
+
       this._expectedLen = len;
       this._buf = new Uint8Array(0);
 
@@ -1338,17 +1362,19 @@ async _handleLoggedPayload(payloadU8) {
 
     if (this._buf.length < this._expectedLen) return;
 
-	if (this._buf.length > this._expectedLen) {
-	  console.warn("[sync] OVERFLOW: bufLen > expectedLen", {
-		bufLen: this._buf.length,
-		expectedLen: this._expectedLen,
-		overflowHead: Array.from(this._buf.slice(this._expectedLen, this._expectedLen + 16))
-		  .map(b => b.toString(16).padStart(2,"0")).join(" ")
-	  });
-	}
-
     const payload = this._buf.slice(0, this._expectedLen);
+    const remainder = (this._buf.length > this._expectedLen)
+      ? this._buf.slice(this._expectedLen)
+      : null;
+
     this._resetAssembler();
+
+    // If BLE/serial delivered bytes for *next* frame in the same chunk,
+    // do NOT drop them—feed them back in.
+    if (remainder && remainder.length) {
+      const feed = () => this._onRx(remainder);
+      (typeof queueMicrotask === "function") ? queueMicrotask(feed) : Promise.resolve().then(feed);
+    }
 
     // --- LOGGED SYNC PAYLOADS ---
     if (this._mode === "logged") {
@@ -1383,7 +1409,6 @@ async _handleLoggedPayload(payloadU8) {
 
 
   _handleStreamingPayload(payload) {
-	console.log(payload);
     // payload starts with: [sensorId][tick u24][sensorPayload...][optional crc16]
     if (payload.length < 4) return;
 
@@ -1413,7 +1438,6 @@ async _handleLoggedPayload(payloadU8) {
     const sensorPayload = body.slice(4);
 
     const sensor = this.sensors[sensorId];
-	console.log(sensor);
     const systemTsLastSampleMillis = nowMillis();
     let tsInfo = null;
     if (sensor) tsInfo = sensor.getTimestampUnwrappedMillis(tick, systemTsLastSampleMillis);
@@ -1502,6 +1526,23 @@ _feedStreamBytes(chunk) {
     if (this._mode === "command") this._mode = "idle";
     if (pending) pending.resolve({ payload });
     this.emit("commandPayload", { payload });
+  }
+}
+_clearSyncRxBuffers(reason = "") {
+  // When we decide to NACK / retry, discard any partial RX state.
+  // Otherwise the resent packet can be concatenated onto stale bytes and misalign parsing.
+  const had = {
+    rxStreamBufLen: this._rxStreamBuf?.length ?? 0,
+    asmBufLen: this._buf?.length ?? 0,
+    expectedLen: this._expectedLen ?? 0,
+    newPayload: this._newPayload ?? true
+  };
+
+  this._rxStreamBuf = new Uint8Array(0);
+  this._resetAssembler();
+
+  if (this.debugSync) {
+    console.warn("[sync] cleared RX buffers", { reason, had });
   }
 }
 
