@@ -1338,6 +1338,15 @@ async _handleLoggedPayload(payloadU8) {
 
     if (this._buf.length < this._expectedLen) return;
 
+	if (this._buf.length > this._expectedLen) {
+	  console.warn("[sync] OVERFLOW: bufLen > expectedLen", {
+		bufLen: this._buf.length,
+		expectedLen: this._expectedLen,
+		overflowHead: Array.from(this._buf.slice(this._expectedLen, this._expectedLen + 16))
+		  .map(b => b.toString(16).padStart(2,"0")).join(" ")
+	  });
+	}
+
     const payload = this._buf.slice(0, this._expectedLen);
     this._resetAssembler();
 
@@ -1374,6 +1383,7 @@ async _handleLoggedPayload(payloadU8) {
 
 
   _handleStreamingPayload(payload) {
+	console.log(payload);
     // payload starts with: [sensorId][tick u24][sensorPayload...][optional crc16]
     if (payload.length < 4) return;
 
@@ -1403,6 +1413,7 @@ async _handleLoggedPayload(payloadU8) {
     const sensorPayload = body.slice(4);
 
     const sensor = this.sensors[sensorId];
+	console.log(sensor);
     const systemTsLastSampleMillis = nowMillis();
     let tsInfo = null;
     if (sensor) tsInfo = sensor.getTimestampUnwrappedMillis(tick, systemTsLastSampleMillis);
