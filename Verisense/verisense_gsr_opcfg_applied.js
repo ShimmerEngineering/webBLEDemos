@@ -564,6 +564,41 @@ class SensorGSR extends SensorBase {
     this.samplingRateHz = 50; // set to your actual config
   }
 
+
+
+  // Operational Config → sensor settings (ported from C# SensorGSR.InitializeUsingOperationConfig)
+  applyOperationalConfig(op) {
+    if (!op) return;
+
+    const gen1 = op[OP_IDX.GEN_CFG_1] ?? 0;
+    const gen2 = op[OP_IDX.GEN_CFG_2] ?? 0;
+
+    // C#: if ((GEN_CFG_1 >> 7) == 1) GSREnabled = true;
+    this.gsrEnabled = ((gen1 >> 7) & 0x01) === 1;
+
+    // C#: if ((GEN_CFG_2 & 0b00000010) > 1) BattEnabled = true;
+    this.battEnabled = (gen2 & 0b00000010) !== 0;
+
+    // Rate/range/oversampling are stored for debugging (mapping tables can be added later)
+    const rateCfg = (op[OP_IDX.ADC_CHANNEL_SETTINGS_0] ?? 0) & 0x3F;
+    const cfg1 = (op[OP_IDX.ADC_CHANNEL_SETTINGS_1] ?? 0) & 0xFF;
+    const rangeCfg = cfg1 & 0x07;
+    const oversamplingCfg = (cfg1 >> 4) & 0x0F;
+
+    this.gsrRateSettingRaw = rateCfg;
+    this.gsrRangeSettingRaw = rangeCfg;
+    this.gsrOversamplingRateSettingRaw = oversamplingCfg;
+
+    // In C#, rangeCfg is mapped through GSRRange.Settings. In practice this is usually 0..4.
+    // We keep it conservative: accept 0..4, otherwise leave current setting unchanged.
+    if (rangeCfg >= 0 && rangeCfg <= 4) {
+      this.gsrRangeSetting = rangeCfg;
+    }
+
+    // NOTE: samplingRateHz mapping is firmware/settings-table specific.
+    // We leave this.samplingRateHz as-is, but you can log rateCfg to build a table.
+  }
+
   setHardwareIdentifier(idStr) { this.hardwareIdentifier = idStr; }
   setEnabled({ gsr, batt }) {
     if (typeof gsr === "boolean") this.gsrEnabled = gsr;
@@ -612,40 +647,6 @@ class SensorGSR extends SensorBase {
 
   kOhmToUSiemens(kOhms) { return 1000.0 / kOhms; }
 
-// Operational Config → sensor settings (ported from C# SensorGSR.InitializeUsingOperationConfig)
-  applyOperationalConfig(op) {
-	console.log("gsr" + op);  
-    if (!op) return;
-
-    const gen1 = op[OP_IDX.GEN_CFG_1] ?? 0;
-    const gen2 = op[OP_IDX.GEN_CFG_2] ?? 0;
-
-    // C#: if ((GEN_CFG_1 >> 7) == 1) GSREnabled = true;
-    this.gsrEnabled = ((gen1 >> 7) & 0x01) === 1;
-
-    // C#: if ((GEN_CFG_2 & 0b00000010) > 1) BattEnabled = true;
-    this.battEnabled = (gen2 & 0b00000010) !== 0;
-
-    // Rate/range/oversampling are stored for debugging (mapping tables can be added later)
-    const rateCfg = (op[OP_IDX.ADC_CHANNEL_SETTINGS_0] ?? 0) & 0x3F;
-    const cfg1 = (op[OP_IDX.ADC_CHANNEL_SETTINGS_1] ?? 0) & 0xFF;
-    const rangeCfg = cfg1>>5 & 0x07;
-    const oversamplingCfg = (cfg1 >> 4) & 0x0F;
-
-    this.gsrRateSettingRaw = rateCfg;
-    this.gsrRangeSettingRaw = rangeCfg;
-    this.gsrOversamplingRateSettingRaw = oversamplingCfg;
-
-    // In C#, rangeCfg is mapped through GSRRange.Settings. In practice this is usually 0..4.
-    // We keep it conservative: accept 0..4, otherwise leave current setting unchanged.
-    if (rangeCfg >= 0 && rangeCfg <= 4) {
-      this.gsrRangeSetting = rangeCfg;
-    }
-
-    // NOTE: samplingRateHz mapping is firmware/settings-table specific.
-    // We leave this.samplingRateHz as-is, but you can log rateCfg to build a table.
-  }
-
   parsePayload(sensorPayloadBytes) {
     // sample is 2 bytes (GSR only) or 4 bytes (Batt + GSR), both int16 but only 12-bit ADC used
     const bytesPerSample = (this.gsrEnabled && this.battEnabled) ? 4 : 2;
@@ -664,7 +665,6 @@ class SensorGSR extends SensorBase {
 
       if (this.gsrEnabled) {
         const gsrraw = i16le(sensorPayloadBytes, base + gsrStart);
-		console.log("gsrraw: " + gsrraw);
         let adc12 = (gsrraw & 0x0FFF);
 
         let currentRange = this.gsrRangeSetting;
@@ -688,7 +688,6 @@ class SensorGSR extends SensorBase {
         const connectivity = (uS > this.LIMIT_MIN_VALID_USIEMENS) ? "Connected" : "Disconnected";
 
         gsr = { raw: gsrraw, adc12, range: currentRange, volts, kOhms, uS, connectivity };
-		console.log(gsr);
       }
 
       if (this.battEnabled) {
@@ -727,7 +726,6 @@ export class VerisenseBleDevice extends TinyEmitter {
     this._transportKind = null; // 'ble' | 'serial'
     this.port = null;           // Web Serial port (if using serial)
     this._serialAbort = null;   // AbortController for read loop
-    this._onGattDisconnected = null; // stored BLE disconnect handler
 
     this.device = null;
     this.server = null;
@@ -770,11 +768,6 @@ export class VerisenseBleDevice extends TinyEmitter {
   console.log("CONNECT");
 
 
-    // If we're currently connected over serial, tear that down first so UI can use one device instance.
-    if (this._transportKind === "serial" || this.port) {
-      try { await this.disconnect({ reason: "Switching transport" }); } catch {}
-    }
-
     this._transportKind = "ble";
   const opts = {
     filters: filters ?? [{ services: [VerisenseBleDevice.NUS_SERVICE] }],
@@ -782,21 +775,10 @@ export class VerisenseBleDevice extends TinyEmitter {
   };
 
   this.device = device ?? await navigator.bluetooth.requestDevice(opts);
-
-    // Keep a removable handler so manual disconnect doesn't double-emit.
-    try {
-      if (this._onGattDisconnected && this.device) {
-        this.device.removeEventListener("gattserverdisconnected", this._onGattDisconnected);
-      }
-    } catch {}
-
-    this._onGattDisconnected = () => {
+    this.device.addEventListener("gattserverdisconnected", () => {
+      this.emit("disconnected", {});
       this._mode = "idle";
-      this._transportKind = null;
-      this.emit("disconnected", { kind: "ble" });
-    };
-
-    this.device.addEventListener("gattserverdisconnected", this._onGattDisconnected);
+    });
 
     this.server = await this.device.gatt.connect();
     this.service = await this.server.getPrimaryService(VerisenseBleDevice.NUS_SERVICE);
@@ -846,8 +828,12 @@ try {
       const v = safe(idx);
       console.log(`[opcfg] ${name} @${idx}:`, v == null ? "OUT_OF_RANGE" : `0x${v.toString(16).padStart(2,"0")} (${v})`);
     };
-
     logByte("GEN_CFG_0", OP_IDX.GEN_CFG_0);
+    logByte("GEN_CFG_1", OP_IDX.GEN_CFG_1);
+    logByte("GEN_CFG_2", OP_IDX.GEN_CFG_2);
+    logByte("ADC_CHANNEL_SETTINGS_0", OP_IDX.ADC_CHANNEL_SETTINGS_0);
+    logByte("ADC_CHANNEL_SETTINGS_1", OP_IDX.ADC_CHANNEL_SETTINGS_1);
+
     logByte("ACCEL1_CFG_0", OP_IDX.ACCEL1_CFG_0);
     logByte("ACCEL1_CFG_1", OP_IDX.ACCEL1_CFG_1);
     logByte("ACCEL1_CFG_2", OP_IDX.ACCEL1_CFG_2);
@@ -862,9 +848,6 @@ try {
   // Before/after snapshots
   console.log("[opcfg] accel1 BEFORE:", { range: this.accel1.range, hz: this.accel1.samplingRateHz, enabled: this.accel1.enabled });
   this.accel1.applyOperationalConfig(op);
-  console.log("[opcfg] gsr BEFORE:" + this.gsr.gsrRangeSetting);
-  this.gsr.applyOperationalConfig(op);
-  console.log("[opcfg] gsr AFTER:" + this.gsr.gsrRangeSetting);
   console.log("[opcfg] accel1 AFTER :", { range: this.accel1.range, hz: this.accel1.samplingRateHz, enabled: this.accel1.enabled });
 
   console.log("[opcfg] gyroAccel2 BEFORE:", {
@@ -886,6 +869,27 @@ try {
     gyroRange: this.gyroAccel2.gyroRange,
     hz: this.gyroAccel2.samplingRateHz
   });
+
+  console.log("[opcfg] gsr BEFORE:", {
+    gsrEnabled: this.gsr.gsrEnabled,
+    battEnabled: this.gsr.battEnabled,
+    rangeSetting: this.gsr.gsrRangeSetting,
+    rateRaw: this.gsr.gsrRateSettingRaw,
+    oversamplingRaw: this.gsr.gsrOversamplingRateSettingRaw
+  });
+  if (typeof this.gsr.applyOperationalConfig === "function") {
+    this.gsr.applyOperationalConfig(op);
+  } else {
+    console.warn("[opcfg] gsr.applyOperationalConfig() is missing");
+  }
+  console.log("[opcfg] gsr AFTER :", {
+    gsrEnabled: this.gsr.gsrEnabled,
+    battEnabled: this.gsr.battEnabled,
+    rangeSetting: this.gsr.gsrRangeSetting,
+    rateRaw: this.gsr.gsrRateSettingRaw,
+    oversamplingRaw: this.gsr.gsrOversamplingRateSettingRaw
+  });
+
 
   this.emit("opConfig", { op });
   console.log("[opcfg] done.");
@@ -917,11 +921,9 @@ try {
       throw new Error("Web Serial not supported in this browser. Use Chrome/Edge on HTTPS or http://localhost.");
     }
 
-    // If already connected (BLE or Serial), disconnect first.
-    if (this._transportKind === "ble" && this.device?.gatt?.connected) {
-      await this.disconnect({ reason: "Reconnecting (serial)" });
-    } else if (this._transportKind === "serial" && this.port) {
-      await this.disconnect({ reason: "Reconnecting (serial)" });
+    // if already connected over BLE, disconnect first
+    if (this.device?.gatt?.connected) {
+      await this.disconnect();
     }
 
     this._transportKind = "serial";
@@ -964,7 +966,6 @@ try {
         this.operationalConfig = op;
         this.accel1?.applyOperationalConfig?.(op);
         this.gyroAccel2?.applyOperationalConfig?.(op);
-		this.gsr?.applyOperationalConfig?.(op);
         this.emit("opConfig", { op });
       }
     } catch (e) {
@@ -1018,50 +1019,17 @@ try {
     this._serialAbort = null;
   }
 
-// Unified disconnect for BLE + Web Serial.
-// UI should always call: await v.disconnect()
-async disconnect({ reason = null } = {}) {
-  const kind = this._transportKind === "serial" ? "serial" : "ble";
 
-  // Best-effort: stop streaming so device returns to idle
-  if (this._mode === "streaming") {
-    try { await this.stopStreaming(); } catch {}
-  }
-
-  // Abort any in-flight logged transfer
-  if (this._sync) {
-    try { this._abortSync(new Error(reason || "Disconnected")); } catch {}
-  }
-
-  // Tear down transport
-  if (this._transportKind === "serial") {
-    try { await this._serialDisconnect(); } catch {}
-  } else {
-    try { if (this.rx) await this.rx.stopNotifications?.(); } catch {}
-    try { if (this._onGattDisconnected && this.device) this.device.removeEventListener("gattserverdisconnected", this._onGattDisconnected); } catch {}
+  async disconnect() {
+    try { if (this.rx) this.rx.stopNotifications?.(); } catch {}
     try { if (this.device?.gatt?.connected) this.device.gatt.disconnect(); } catch {}
+    this._mode = "idle";
+    this.emit("disconnected", {});
   }
-
-  // Clear handles (safe for both)
-  this._mode = "idle";
-  this._transportKind = null;
-
-  this.port = null;
-  this._serialAbort = null;
-
-  this.tx = null;
-  this.rx = null;
-  this.service = null;
-  this.server = null;
-  this.device = null;
-
-  this.emit("disconnected", { kind });
-  return true;
-}
 
 async transferLoggedData({
   fileHandle = null,          // FileSystemFileHandle (Chromium) if you want true streaming-to-disk
-  timeoutMs = 1000,
+  timeoutMs = 5000,
   maxNack = 5,
   maxCrcNack = 5,
   onProgress = null,          // ({ payloadIndex, bytesWritten, crcOk }) => void
@@ -1127,11 +1095,10 @@ async transferLoggedData({
     try {
       if (this._sync.lastReply === "NONE") {
         // resend read request
-        await this.writeBytes(READ_DATA_REQ, { withResponse: true });
+        await this.writeBytes(READ_DATA_REQ);
       } else {
         // force resend of last by NACK
-		this._clearSyncRxBuffers("timeout-nack");
-		await this.writeBytes(DATA_NACK);
+        await this.writeBytes(DATA_NACK);
         this._sync.nackCount++;
         this._sync.lastReply = "NACK";
         if (this._sync.nackCount >= maxNack) throw new Error("Too many NACK timeouts");
@@ -1143,7 +1110,7 @@ async transferLoggedData({
   }, Math.max(250, Math.floor(timeoutMs / 2)));
 
   // ---- kick it off ----
-  await this.writeBytes(READ_DATA_REQ, { withResponse: true });
+  await this.writeBytes(READ_DATA_REQ);
 
   // ---- wait ----
   const result = await donePromise;
@@ -1167,7 +1134,7 @@ async transferLoggedData({
 
 
   // ---------- requests ----------
-  async writeBytes(bytes, { withResponse = false } = {}) {
+  async writeBytes(bytes) {
     const u8 = (bytes instanceof Uint8Array) ? bytes : new Uint8Array(bytes);
 
     // Serial transport
@@ -1178,14 +1145,7 @@ async transferLoggedData({
 
     // BLE transport (default)
     if (!this.tx) throw new Error("Not connected");
-
-    // For sync/control frames (ACK/NACK/REQ), use write-with-response to get radio-level flow control.
-    if (withResponse) {
-      await this.tx.writeValue(u8);
-      return;
-    }
-
-    // Bulk/normal writes can use withoutResponse if available (lower latency).
+    // Prefer withoutResponse if available (matches your C#)
     if (this.tx.writeValueWithoutResponse) {
       await this.tx.writeValueWithoutResponse(u8);
     } else {
@@ -1294,10 +1254,9 @@ async _handleLoggedPayload(payloadU8) {
   const payloadIndex = u16le_at(payloadU8, 0);
 
   if (!crcOk) {
-	  s.lastReply = "NACK";
-	  s.nackCrcCount++;
-	  this._clearSyncRxBuffers("crc-nack");
-	  await this.writeBytes(DATA_NACK);
+    s.lastReply = "NACK";
+    s.nackCrcCount++;
+    await this.writeBytes(DATA_NACK);
 
     if (s.nackCrcCount >= 5) {
       this._abortSync(new Error("Too many CRC failures (NACKCRCcounter>=5)"));
@@ -1322,7 +1281,7 @@ async _handleLoggedPayload(payloadU8) {
   s.lastReply = "ACK";
   s.nackCount = 0;
   s.nackCrcCount = 0;
-  await this.writeBytes(DATA_ACK, { withResponse: true });
+  await this.writeBytes(DATA_ACK);
 
   if (s.onProgress) s.onProgress({ payloadIndex, bytesWritten: s.bytesWritten, crcOk: true });
 }
@@ -1376,21 +1335,6 @@ async _handleLoggedPayload(payloadU8) {
     if (this._newPayload) {
       if (bytes.length < 3) return;
       const len = u16le(bytes[1], bytes[2]);
-
-      // Sanity guard: if we ever get desynced (dropped/extra byte), we'll start
-      // interpreting random bytes as [hdr][lenLE16]. Bail out and resync.
-      const MAX_FRAME = 40000; // expected logged frames are ~32k; keep a little headroom
-      if (len < 0 || len > MAX_FRAME) {
-        console.warn("[rx] Implausible frame length; resyncing", { hdr: bytes[0], len });
-        this._resetAssembler();
-        if (bytes.length > 1) {
-          const rest = bytes.slice(1);
-          const feed = () => this._onRx(rest);
-          (typeof queueMicrotask === "function") ? queueMicrotask(feed) : Promise.resolve().then(feed);
-        }
-        return;
-      }
-
       this._expectedLen = len;
       this._buf = new Uint8Array(0);
 
@@ -1403,18 +1347,7 @@ async _handleLoggedPayload(payloadU8) {
     if (this._buf.length < this._expectedLen) return;
 
     const payload = this._buf.slice(0, this._expectedLen);
-    const remainder = (this._buf.length > this._expectedLen)
-      ? this._buf.slice(this._expectedLen)
-      : null;
-
     this._resetAssembler();
-
-    // If BLE/serial delivered bytes for *next* frame in the same chunk,
-    // do NOT drop them—feed them back in.
-    if (remainder && remainder.length) {
-      const feed = () => this._onRx(remainder);
-      (typeof queueMicrotask === "function") ? queueMicrotask(feed) : Promise.resolve().then(feed);
-    }
 
     // --- LOGGED SYNC PAYLOADS ---
     if (this._mode === "logged") {
@@ -1566,23 +1499,6 @@ _feedStreamBytes(chunk) {
     if (this._mode === "command") this._mode = "idle";
     if (pending) pending.resolve({ payload });
     this.emit("commandPayload", { payload });
-  }
-}
-_clearSyncRxBuffers(reason = "") {
-  // When we decide to NACK / retry, discard any partial RX state.
-  // Otherwise the resent packet can be concatenated onto stale bytes and misalign parsing.
-  const had = {
-    rxStreamBufLen: this._rxStreamBuf?.length ?? 0,
-    asmBufLen: this._buf?.length ?? 0,
-    expectedLen: this._expectedLen ?? 0,
-    newPayload: this._newPayload ?? true
-  };
-
-  this._rxStreamBuf = new Uint8Array(0);
-  this._resetAssembler();
-
-  if (this.debugSync) {
-    console.warn("[sync] cleared RX buffers", { reason, had });
   }
 }
 
