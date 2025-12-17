@@ -47,15 +47,19 @@
     </div>
   </div>
 
-  <div class="grid">
+    <div class="grid">
     <div class="card">
       <h3>Latest accel sample</h3>
       <div id="latest">—</div>
+      <canvas id="plot" width="520" height="170" style="width:100%; background:#111; border-radius:12px; margin-top:8px;"></canvas>
+      <small id="plotInfo"></small>
     </div>
 
     <div class="card">
       <h3>Latest GSR sample</h3>
       <div id="latestGsr">—</div>
+      <canvas id="plotGsr" width="520" height="170" style="width:100%; background:#111; border-radius:12px; margin-top:8px;"></canvas>
+      <small id="plotGsrInfo"></small>
     </div>
 
     <div class="card">
@@ -67,19 +71,7 @@
     </div>
   </div>
 
-  <div class="card">
-    <h3>Accel plot (X/Y/Z)</h3>
-    <canvas id="plot" width="700" height="260" style="width:100%; background:#111; border-radius:12px;"></canvas>
-    <small id="plotInfo"></small>
-  </div>
-
-  <div class="card">
-    <h3>GSR plot (µS)</h3>
-    <canvas id="plotGsr" width="700" height="260" style="width:100%; background:#111; border-radius:12px;"></canvas>
-    <small id="plotGsrInfo"></small>
-  </div>
-
-  <script type="module">
+<script type="module">
     import { VerisenseBleDevice } from "./verisense.js";
 
     const $ = (id) => document.getElementById(id);
@@ -620,7 +612,8 @@
     btnDisconnect.onclick = async () => {
       try {
         setStatus("disconnecting...");
-        await v?.disconnect?.();
+        await v?.disconnect?.({ reason: "ui btnDisconnect" });
+        v = null;
         setStatus("disconnected");
         btnDisconnect.disabled = true;
         btnStart.disabled = true;
