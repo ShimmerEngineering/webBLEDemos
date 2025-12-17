@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Verisense BLE Scan/Select + Stream (Accel @ 51.2Hz)</title>
+  <title>Verisense Stream (Accel + GSR)</title>
   <style>
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 16px; }
     .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin: 10px 0; }
@@ -11,11 +11,12 @@
     .card { border: 1px solid #444; border-radius: 12px; padding: 12px; }
     pre { background:#111; color:#ddd; padding:10px; border-radius:12px; overflow:auto; max-height: 320px; }
     small { color:#666; }
-    .grid { display:grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .grid { display:grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+    canvas { display:block; }
   </style>
 </head>
 <body>
-  <h2>Verisense Stream (Accel1 / LIS2DW12 @ 51.2 Hz)</h2>
+  <h2>Verisense Stream (Accel1 + GSR)</h2>
   <small>Must be served over <b>https</b> or <b>http://localhost</b>. Click buttons (user gesture required).</small>
 
   <div class="card">
@@ -41,7 +42,7 @@
     <div class="row">
       <button id="btnStart" disabled>Start streaming</button>
       <button id="btnStop" disabled>Stop streaming</button>
-	  <button id="btnSync" disabled>Sync logged data (.bin)</button>
+      <button id="btnSync" disabled>Sync logged data (.bin)</button>
       <span id="status">Status: idle</span>
     </div>
   </div>
@@ -53,6 +54,11 @@
     </div>
 
     <div class="card">
+      <h3>Latest GSR sample</h3>
+      <div id="latestGsr">—</div>
+    </div>
+
+    <div class="card">
       <h3>Log</h3>
       <pre id="log"></pre>
       <div class="row">
@@ -60,21 +66,27 @@
       </div>
     </div>
   </div>
-<div class="card">
-  <h3>Accel plot (X/Y/Z)</h3>
-  <canvas id="plot" width="700" height="260" style="width:100%; background:#111; border-radius:12px;"></canvas>
-  <small id="plotInfo"></small>
-</div>
+
+  <div class="card">
+    <h3>Accel plot (X/Y/Z)</h3>
+    <canvas id="plot" width="700" height="260" style="width:100%; background:#111; border-radius:12px;"></canvas>
+    <small id="plotInfo"></small>
+  </div>
+
+  <div class="card">
+    <h3>GSR plot (µS)</h3>
+    <canvas id="plotGsr" width="700" height="260" style="width:100%; background:#111; border-radius:12px;"></canvas>
+    <small id="plotGsrInfo"></small>
+  </div>
 
   <script type="module">
-  
-  
-  
     import { VerisenseBleDevice } from "./verisense.js";
-	console.log('helloworld'); // <— add this
+
     const $ = (id) => document.getElementById(id);
+
     const logEl = $("log");
     const latestEl = $("latest");
+    const latestGsrEl = $("latestGsr");
     const statusEl = $("status");
 
     const btnScan = $("btnScan");
@@ -85,123 +97,221 @@
     const btnStart = $("btnStart");
     const btnStop = $("btnStop");
     const btnClear = $("btnClear");
-
-    
     const btnSync = $("btnSync");
-const deviceSelect = $("deviceSelect");
+
+    const deviceSelect = $("deviceSelect");
     const namePrefixEl = $("namePrefix");
-const plotCanvas = $("plot");
-const plotInfoEl = $("plotInfo");
-const ctx = plotCanvas.getContext("2d");
 
-// rolling buffer (last N seconds)
-const PLOT_SECONDS = 8;
-let accelHz = 51.2;
-let maxPoints = Math.ceil(PLOT_SECONDS * accelHz);
+    // ----------------------------
+    // ACCEL PLOT (ring buffer)
+    // ----------------------------
+    const plotCanvas = $("plot");
+    const plotInfoEl = $("plotInfo");
+    const ctx = plotCanvas.getContext("2d");
 
-// ring buffers
-let ax = new Float32Array(maxPoints);
-let ay = new Float32Array(maxPoints);
-let az = new Float32Array(maxPoints);
-let aWrite = 0;
-let aCount = 0;
+    const PLOT_SECONDS = 8;
+    let accelHz = 51.2;
+    let maxPoints = Math.ceil(PLOT_SECONDS * accelHz);
 
-function resetPlotBuffers(hz = 51.2) {
-  accelHz = hz;
-  maxPoints = Math.ceil(PLOT_SECONDS * accelHz);
-  ax = new Float32Array(maxPoints);
-  ay = new Float32Array(maxPoints);
-  az = new Float32Array(maxPoints);
-  aWrite = 0;
-  aCount = 0;
-}
+    let ax = new Float32Array(maxPoints);
+    let ay = new Float32Array(maxPoints);
+    let az = new Float32Array(maxPoints);
+    let aWrite = 0;
+    let aCount = 0;
 
-function pushAccelSample(cal3) {
-  ax[aWrite] = cal3[0];
-  ay[aWrite] = cal3[1];
-  az[aWrite] = cal3[2];
-  aWrite = (aWrite + 1) % maxPoints;
-  aCount = Math.min(aCount + 1, maxPoints);
-}
-
-function drawSeries(series, minY, maxY, w, h, color) {
-  if (aCount < 2) return;
-  const span = maxY - minY || 1;
-
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-
-  for (let i = 0; i < aCount; i++) {
-    const idx = (aWrite - aCount + i + maxPoints) % maxPoints;
-    const x = (i / (aCount - 1)) * (w - 1);
-    const y = h - 1 - ((series[idx] - minY) / span) * (h - 1);
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  }
-  ctx.stroke();
-}
-
-let plotRaf = null;
-function requestPlotRedraw() {
-  if (plotRaf) return;
-  plotRaf = requestAnimationFrame(() => {
-    plotRaf = null;
-
-    const w = plotCanvas.width;
-    const h = plotCanvas.height;
-
-    // background
-    ctx.clearRect(0, 0, w, h);
-    ctx.fillStyle = "#111";
-    ctx.fillRect(0, 0, w, h);
-
-    if (aCount < 2) return;
-
-    // autoscale using all 3 axes
-    let minY = Infinity, maxY = -Infinity;
-    for (let i = 0; i < aCount; i++) {
-      const idx = (aWrite - aCount + i + maxPoints) % maxPoints;
-      minY = Math.min(minY, ax[idx], ay[idx], az[idx]);
-      maxY = Math.max(maxY, ax[idx], ay[idx], az[idx]);
+    function resetAccelPlotBuffers(hz = 51.2) {
+      accelHz = hz;
+      maxPoints = Math.ceil(PLOT_SECONDS * accelHz);
+      ax = new Float32Array(maxPoints);
+      ay = new Float32Array(maxPoints);
+      az = new Float32Array(maxPoints);
+      aWrite = 0;
+      aCount = 0;
+      if (plotInfoEl) plotInfoEl.textContent = "";
+      ctx.clearRect(0, 0, plotCanvas.width, plotCanvas.height);
     }
-    // small padding
-    const pad = (maxY - minY) * 0.05 || 0.1;
-    minY -= pad; maxY += pad;
 
-    // draw a midline
-    ctx.strokeStyle = "#333";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(0, h / 2);
-    ctx.lineTo(w, h / 2);
-    ctx.stroke();
-
-    // plot X/Y/Z
-    drawSeries(ax, minY, maxY, w, h, "#4cc9f0"); // X
-    drawSeries(ay, minY, maxY, w, h, "#f72585"); // Y
-    drawSeries(az, minY, maxY, w, h, "#b8f2e6"); // Z
-
-    if (plotInfoEl) {
-      plotInfoEl.textContent = `points: ${aCount}/${maxPoints} | scale: ${minY.toFixed(2)} .. ${maxY.toFixed(2)} m/s²`;
+    function pushAccelSample(cal3) {
+      ax[aWrite] = cal3[0];
+      ay[aWrite] = cal3[1];
+      az[aWrite] = cal3[2];
+      aWrite = (aWrite + 1) % maxPoints;
+      aCount = Math.min(aCount + 1, maxPoints);
     }
-  });
-}
 
+    function drawSeriesAccel(series, minY, maxY, w, h, color) {
+      if (aCount < 2) return;
+      const span = maxY - minY || 1;
+
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+
+      for (let i = 0; i < aCount; i++) {
+        const idx = (aWrite - aCount + i + maxPoints) % maxPoints;
+        const x = (i / (aCount - 1)) * (w - 1);
+        const y = h - 1 - ((series[idx] - minY) / span) * (h - 1);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+
+    let plotRaf = null;
+    function requestAccelPlotRedraw() {
+      if (plotRaf) return;
+      plotRaf = requestAnimationFrame(() => {
+        plotRaf = null;
+
+        const w = plotCanvas.width;
+        const h = plotCanvas.height;
+
+        ctx.clearRect(0, 0, w, h);
+        ctx.fillStyle = "#111";
+        ctx.fillRect(0, 0, w, h);
+
+        if (aCount < 2) return;
+
+        let minY = Infinity, maxY = -Infinity;
+        for (let i = 0; i < aCount; i++) {
+          const idx = (aWrite - aCount + i + maxPoints) % maxPoints;
+          minY = Math.min(minY, ax[idx], ay[idx], az[idx]);
+          maxY = Math.max(maxY, ax[idx], ay[idx], az[idx]);
+        }
+        const pad = (maxY - minY) * 0.05 || 0.1;
+        minY -= pad; maxY += pad;
+
+        ctx.strokeStyle = "#333";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(0, h / 2);
+        ctx.lineTo(w, h / 2);
+        ctx.stroke();
+
+        drawSeriesAccel(ax, minY, maxY, w, h, "#4cc9f0"); // X
+        drawSeriesAccel(ay, minY, maxY, w, h, "#f72585"); // Y
+        drawSeriesAccel(az, minY, maxY, w, h, "#b8f2e6"); // Z
+
+        if (plotInfoEl) {
+          plotInfoEl.textContent = `points: ${aCount}/${maxPoints} | scale: ${minY.toFixed(2)} .. ${maxY.toFixed(2)} m/s²`;
+        }
+      });
+    }
+
+    // ----------------------------
+    // GSR PLOT (ring buffer)
+    // ----------------------------
+    const plotGsrCanvas = $("plotGsr");
+    const plotGsrInfoEl = $("plotGsrInfo");
+    const ctxG = plotGsrCanvas.getContext("2d");
+
+    const PLOT_GSR_SECONDS = 20;
+    let gsrHz = 50;
+    let gMaxPoints = Math.ceil(PLOT_GSR_SECONDS * gsrHz);
+
+    let gsu = new Float32Array(gMaxPoints); // µS
+    let gWrite = 0;
+    let gCount = 0;
+
+    function resetGsrPlotBuffers(hz = 50) {
+      gsrHz = hz;
+      gMaxPoints = Math.ceil(PLOT_GSR_SECONDS * gsrHz);
+      gsu = new Float32Array(gMaxPoints);
+      gWrite = 0;
+      gCount = 0;
+      if (plotGsrInfoEl) plotGsrInfoEl.textContent = "";
+      ctxG.clearRect(0, 0, plotGsrCanvas.width, plotGsrCanvas.height);
+    }
+
+    function pushGsrSample(uS) {
+      gsu[gWrite] = uS;
+      gWrite = (gWrite + 1) % gMaxPoints;
+      gCount = Math.min(gCount + 1, gMaxPoints);
+    }
+
+    function drawSeriesGsr(series, minY, maxY, w, h, color) {
+      if (gCount < 2) return;
+      const span = maxY - minY || 1;
+
+      ctxG.strokeStyle = color;
+      ctxG.lineWidth = 1.5;
+      ctxG.beginPath();
+
+      for (let i = 0; i < gCount; i++) {
+        const idx = (gWrite - gCount + i + gMaxPoints) % gMaxPoints;
+        const x = (i / (gCount - 1)) * (w - 1);
+        const y = h - 1 - ((series[idx] - minY) / span) * (h - 1);
+        if (i === 0) ctxG.moveTo(x, y);
+        else ctxG.lineTo(x, y);
+      }
+      ctxG.stroke();
+    }
+
+    let gsrPlotRaf = null;
+    function requestGsrPlotRedraw() {
+      if (gsrPlotRaf) return;
+      gsrPlotRaf = requestAnimationFrame(() => {
+        gsrPlotRaf = null;
+
+        const w = plotGsrCanvas.width;
+        const h = plotGsrCanvas.height;
+
+        ctxG.clearRect(0, 0, w, h);
+        ctxG.fillStyle = "#111";
+        ctxG.fillRect(0, 0, w, h);
+
+        if (gCount < 2) return;
+
+        let minY = Infinity, maxY = -Infinity;
+        for (let i = 0; i < gCount; i++) {
+          const idx = (gWrite - gCount + i + gMaxPoints) % gMaxPoints;
+          minY = Math.min(minY, gsu[idx]);
+          maxY = Math.max(maxY, gsu[idx]);
+        }
+        const pad = (maxY - minY) * 0.05 || 0.1;
+        minY -= pad; maxY += pad;
+
+        ctxG.strokeStyle = "#333";
+        ctxG.lineWidth = 1;
+        ctxG.beginPath();
+        ctxG.moveTo(0, h / 2);
+        ctxG.lineTo(w, h / 2);
+        ctxG.stroke();
+
+        drawSeriesGsr(gsu, minY, maxY, w, h, "#9ef01a"); // GSR µS
+
+        if (plotGsrInfoEl) {
+          plotGsrInfoEl.textContent = `points: ${gCount}/${gMaxPoints} | scale: ${minY.toFixed(3)} .. ${maxY.toFixed(3)} µS`;
+        }
+      });
+    }
+
+    // ----------------------------
+    // Helpers / UI
+    // ----------------------------
     function log(...args) {
       const s = args.map(a => (typeof a === "string" ? a : JSON.stringify(a, null, 2))).join(" ");
       logEl.textContent += s + "\n";
       logEl.scrollTop = logEl.scrollHeight;
     }
-	
-	if (!("showSaveFilePicker" in window)) {
-	  log("This browser doesn't support saving .bin directly to disk.");
-	  log("Use Chrome/Edge over https or http://localhost, or use an in-memory download fallback.");
-	}
-	
+
+    function fmtFixed(v, digits) {
+      // Safe number formatting for optional/undefined fields
+      if (typeof v === "number" && Number.isFinite(v)) return v.toFixed(digits);
+      if (v === null || typeof v === "undefined") return "—";
+      const n = Number(v);
+      return Number.isFinite(n) ? n.toFixed(digits) : String(v);
+    }
+
+
+    if (!("showSaveFilePicker" in window)) {
+      log("This browser doesn't support saving .bin directly to disk.");
+      log("Use Chrome/Edge over https or http://localhost, or use an in-memory download fallback.");
+    }
+
     function setStatus(s) { statusEl.textContent = `Status: ${s}`; }
 
-    // Keep a map of devices we can connect to (authorized via chooser or getDevices)
+    // Keep a map of BLE devices (authorized via chooser or getDevices)
     const devicesById = new Map(); // id -> BluetoothDevice
 
     function upsertDeviceOption(dev) {
@@ -227,109 +337,162 @@ function requestPlotRedraw() {
 
     // Your Verisense instance
     let v = null;
-    let accelPackets = 0;
 
-    function configureAccelOnly(dev) {
-      // We only decode/display accel1 (sensorId = 2). Actual device-side streaming config is separate.
+    // packet counters
+    let accelPackets = 0;
+    let gsrPackets = 0;
+
+    function configureAccelAndGsr(dev) {
+      // Decoder settings (device-side streaming config is separate)
       dev.accel1.setRange("2G");
       dev.accel1.samplingRateHz = 51.2;
 
-      // Turn off other decoders (optional)
+      // Enable GSR decoder (sensorId = 1)
+      dev.gsr.setEnabled({ gsr: true, batt: true });
+      dev.gsr.samplingRateHz = 50;
+
+      // Optional: turn off other decoders
       dev.gyroAccel2.setAccelEnabled(false);
       dev.gyroAccel2.setGyroEnabled(false);
       dev.ppg.setChannels({ red:false, ir:false, green:false, blue:false });
-      dev.gsr.setEnabled({ gsr:false, batt:false });
     }
 
-    function renderLatest(pkt) {
+    function renderLatestAccel(pkt) {
       const first = Array.isArray(pkt.decoded) ? pkt.decoded[0] : null;
       if (!first?.cal) {
         latestEl.innerHTML = `<div>packets: ${accelPackets}</div><div>No decoded accel yet</div>`;
         return;
       }
-      const cal = first.cal.map(n => n.toFixed(5)).join(", ");
+      const cal = first.cal.map(n => fmtFixed(n, 5)).join(", ");
       const t = first.timestamps;
-      const ts = t ? `${t.tsMillis.toFixed(1)} ms (plot=${t.systemTsPlotMillis.toFixed(1)})` : "—";
+      const ts = (t && (typeof t.tsMillis !== "undefined" || typeof t.systemTsPlotMillis !== "undefined"))
+        ? `${fmtFixed(t.tsMillis, 1)} ms (plot=${fmtFixed(t.systemTsPlotMillis, 1)})`
+        : "—";
 
       latestEl.innerHTML = `
         <div><b>Accel1 (sensorId=2)</b></div>
         <div>packets: ${accelPackets}</div>
-        <div>tick_u24: ${pkt.tick_u24}</div>
+        <div>tick_u24: ${pkt.tick_u24 ?? "—"}</div>
         <div>cal (m/s²): ${cal}</div>
         <div><small>timestamp: ${ts} | crcOk: ${pkt.crcOk ?? "n/a"}</small></div>
       `;
     }
 
-// Wire the *same* event handlers regardless of transport (BLE vs USB serial)
-function wireDeviceHandlers(dev) {
-  // disconnected handler
-  dev.on("disconnected", () => {
-    log("disconnected");
-    setStatus("disconnected");
-    btnDisconnect.disabled = true;
-    btnStart.disabled = true;
-    btnStop.disabled = true;
-    btnConnect.disabled = false;
-    btnSync.disabled = true;
-  });
+    function renderLatestGsr(pkt) {
+      const first = Array.isArray(pkt.decoded) ? pkt.decoded[0] : null;
+      const gsr = first?.gsr;
+      const batt = first?.batt;
 
-  // streaming + plotting handler
-  let accelSamples = 0;
+      if (!gsr) {
+        latestGsrEl.innerHTML = `<div>packets: ${gsrPackets}</div><div>No decoded GSR yet</div>`;
+        return;
+      }
 
-  // rolling rate calc
-  let t0 = performance.now();
-  let p0 = 0, s0 = 0;
+      const rawStr = (gsr.raw ?? "—");
+      const rStr = fmtFixed(gsr.ohms, 2);
+      const uSStr = fmtFixed(gsr.uS, 4);
 
-  // UI throttle
-  let pendingPkt = null;
-  let rafId = null;
+      const t = first.timestamps;
+      const ts = (t && (typeof t.tsMillis !== "undefined" || typeof t.systemTsPlotMillis !== "undefined"))
+        ? `${fmtFixed(t.tsMillis, 1)} ms (plot=${fmtFixed(t.systemTsPlotMillis, 1)})`
+        : "—";
 
-  function scheduleRender(pkt) {
-    pendingPkt = pkt;
-    if (rafId) return;
-    rafId = requestAnimationFrame(() => {
-      rafId = null;
-      if (pendingPkt) renderLatest(pendingPkt);
-    });
-  }
-
-  dev.on("data", (pkt) => {
-    if (pkt.sensorId !== 2) return;
-
-    accelPackets++;
-    const nSamples = Array.isArray(pkt.decoded) ? pkt.decoded.length : 0;
-    accelSamples += nSamples;
-
-    // update rates every ~500ms
-    const now = performance.now();
-    if (now - t0 >= 500) {
-      const dt = (now - t0) / 1000;
-      const pps = (accelPackets - p0) / dt;
-      const sps = (accelSamples - s0) / dt;
-      console.log(`[rate] pps=${pps.toFixed(1)} sps=${sps.toFixed(1)} samples/packet=${(pps > 0 ? (sps / pps) : 0).toFixed(1)}`);
-
-      t0 = now;
-      p0 = accelPackets;
-      s0 = accelSamples;
+      latestGsrEl.innerHTML = `
+        <div><b>GSR (sensorId=1)</b></div>
+        <div>packets: ${gsrPackets}</div>
+        <div>tick_u24: ${pkt.tick_u24 ?? "—"}</div>
+        <div>gsr: raw=${rawStr} | R=${rStr} Ω | ${uSStr} µS</div>
+        <div>batt: ${batt ? `${batt.mv} mV` : "—"}</div>
+        <div><small>timestamp: ${ts} | crcOk: ${pkt.crcOk ?? "n/a"}</small></div>
+      `;
     }
 
-    for (const s of (pkt.decoded ?? [])) {
-      if (s?.cal) pushAccelSample(s.cal);
-    }
-    requestPlotRedraw();
-    scheduleRender(pkt);
-  });
+    function wireStreamingHandlers(dev) {
+      // rolling rate calc (combined)
+      let t0 = performance.now();
+      let ap0 = 0, as0 = 0;
+      let gp0 = 0, gs0 = 0;
+      let accelSamples = 0;
+      let gsrSamples = 0;
 
-  // Optional: surface your op-config logs to the on-page log too
-  dev.on("opConfig", ({ op }) => log("opConfig received", { len: op?.length, head: Array.from(op?.slice?.(0, 16) ?? []) }));
-  dev.on("opConfigError", (e) => log("opConfigError", e));
-}
+      // UI throttle
+      let pendingAccelPkt = null, accelRafId = null;
+      let pendingGsrPkt = null, gsrRafId = null;
+
+      function scheduleAccelRender(pkt) {
+        pendingAccelPkt = pkt;
+        if (accelRafId) return;
+        accelRafId = requestAnimationFrame(() => {
+          accelRafId = null;
+          if (pendingAccelPkt) renderLatestAccel(pendingAccelPkt);
+        });
+      }
+
+      function scheduleGsrRender(pkt) {
+        pendingGsrPkt = pkt;
+        if (gsrRafId) return;
+        gsrRafId = requestAnimationFrame(() => {
+          gsrRafId = null;
+          if (pendingGsrPkt) renderLatestGsr(pendingGsrPkt);
+        });
+      }
+
+      dev.on("data", (pkt) => {
+        if (!pkt) return;
+
+        if (pkt.sensorId === 2) {
+          accelPackets++;
+          const nSamples = Array.isArray(pkt.decoded) ? pkt.decoded.length : 0;
+          accelSamples += nSamples;
+
+          for (const s of (pkt.decoded ?? [])) {
+            if (s?.cal) pushAccelSample(s.cal);
+          }
+
+          scheduleAccelRender(pkt);
+          requestAccelPlotRedraw();
+        } else if (pkt.sensorId === 1) {
+          gsrPackets++;
+          const nSamples = Array.isArray(pkt.decoded) ? pkt.decoded.length : 0;
+          gsrSamples += nSamples;
+
+          for (const s of (pkt.decoded ?? [])) {
+            const uS = s?.gsr?.uS;
+            if (typeof uS === "number" && Number.isFinite(uS)) pushGsrSample(uS);
+          }
+
+          scheduleGsrRender(pkt);
+          requestGsrPlotRedraw();
+        }
+
+        // log combined rates occasionally (10ms is very chatty; keep it light)
+        const now = performance.now();
+        if (now - t0 >= 500) {
+          const dt = (now - t0) / 1000;
+
+          const app = (accelPackets - ap0) / dt;
+          const asp = (accelSamples - as0) / dt;
+
+          const gpp = (gsrPackets - gp0) / dt;
+          const gsp = (gsrSamples - gs0) / dt;
+
+          console.log(`[rate] accel pps=${app.toFixed(1)} sps=${asp.toFixed(1)} | gsr pps=${gpp.toFixed(1)} sps=${gsp.toFixed(1)}`);
+
+          t0 = now;
+          ap0 = accelPackets; as0 = accelSamples;
+          gp0 = gsrPackets; gs0 = gsrSamples;
+        }
+      });
+
+      // Optional: surface op-config logs on page
+      dev.on("opConfig", ({ op }) => log("opConfig received", { len: op?.length, head: Array.from(op?.slice?.(0, 16) ?? []) }));
+      dev.on("opConfigError", (e) => log("opConfigError", e));
+    }
 
     // --- UI actions ---
 
     btnScan.onclick = async () => {
       try {
-        // This IS the browser's BLE scan+pick UI (required by Web Bluetooth).
         setStatus("scanning (chooser)...");
         const namePrefix = namePrefixEl.value.trim();
 
@@ -366,82 +529,93 @@ function wireDeviceHandlers(dev) {
     };
 
     btnConnect.onclick = async () => {
-	
-  try {
-    const dev = getSelectedDevice();
-    if (!dev) throw new Error("No device selected");
-
-    // Fresh instance each connect
-    v = new VerisenseBleDevice({
-      hardwareIdentifier: "VERISENSE_PULSE_PLUS",
-      stripStreamCrc: true,
-      verifyStreamCrc: false
-    });
-    configureAccelOnly(v);
-
-    // (re)wire listeners (BLE and USB serial use the same handlers)
-    wireDeviceHandlers(v);
-
-setStatus("connecting...");
-    accelPackets = 0;
-    latestEl.textContent = "—";
-
-    // IMPORTANT: call the class connect() now
-    await v.connect({ device: dev });
-
-    log("connected:", { name: dev.name, id: dev.id });
-
-    setStatus("connected");
-    btnDisconnect.disabled = false;
-    btnStart.disabled = false;
-    btnStop.disabled = true;
-    btnConnect.disabled = true;
-	btnSync.disabled = false;
-
-  } catch (e) {
-    log("connect error:", String(e?.message ?? e));
-    console.warn(e);
-    setStatus("error");
-  }
-    };
-
-    // --- USB Serial connect (Web Serial) ---
-    btnConnectSerial.onclick = async () => {
       try {
-        // Fresh instance (same class; uses connectSerial())
+        const dev = getSelectedDevice();
+        if (!dev) throw new Error("No device selected");
+
         v = new VerisenseBleDevice({
           hardwareIdentifier: "VERISENSE_PULSE_PLUS",
           stripStreamCrc: true,
           verifyStreamCrc: false
         });
-        configureAccelOnly(v);
+        configureAccelAndGsr(v);
+        wireStreamingHandlers(v);
 
-        // (re)wire listeners (BLE and USB serial use the same handlers)
-        wireDeviceHandlers(v);
+        v.on("disconnected", () => {
+          log("disconnected");
+          setStatus("disconnected");
+          btnDisconnect.disabled = true;
+          btnStart.disabled = true;
+          btnStop.disabled = true;
+          btnConnect.disabled = false;
+          btnSync.disabled = true;
+        });
 
-        // Reuse your data handler (already defined in BLE connect handler)
-        // If you want separate counters per transport, reset them here:
+        setStatus("connecting...");
         accelPackets = 0;
+        gsrPackets = 0;
         latestEl.textContent = "—";
+        latestGsrEl.textContent = "—";
+
+        await v.connect({ device: dev });
+
+        log("connected:", { name: dev.name, id: dev.id });
+        setStatus("connected");
+
+        btnDisconnect.disabled = false;
+        btnStart.disabled = false;
+        btnStop.disabled = true;
+        btnConnect.disabled = true;
+        btnSync.disabled = false;
+
+      } catch (e) {
+        log("connect error:", String(e?.message ?? e));
+        console.warn(e);
+        setStatus("error");
+      }
+    };
+
+    // --- USB Serial connect (Web Serial) ---
+    btnConnectSerial.onclick = async () => {
+      try {
+        v = new VerisenseBleDevice({
+          hardwareIdentifier: "VERISENSE_PULSE_PLUS",
+          stripStreamCrc: true,
+          verifyStreamCrc: false
+        });
+        configureAccelAndGsr(v);
+        wireStreamingHandlers(v);
+
+        v.on("disconnected", () => {
+          log("disconnected");
+          setStatus("disconnected");
+          btnDisconnect.disabled = true;
+          btnStart.disabled = true;
+          btnStop.disabled = true;
+          btnConnect.disabled = false;
+        });
+
+        accelPackets = 0;
+        gsrPackets = 0;
+        latestEl.textContent = "—";
+        latestGsrEl.textContent = "—";
 
         setStatus("connecting (USB serial)...");
-        // NOTE: requestPort() needs a user gesture; this click qualifies.
         await v.connectSerial({ baudRate: 115200 });
 
         log("connected (USB serial)");
         setStatus("connected (USB serial)");
-                btnSync.disabled = false;
-btnDisconnect.disabled = false;
+        btnDisconnect.disabled = false;
         btnStart.disabled = false;
         btnStop.disabled = true;
         btnConnect.disabled = false; // BLE connect can remain available
+        btnSync.disabled = false;
       } catch (e) {
         log("serial connect error:", String(e?.message ?? e));
         console.warn(e);
         setStatus("error");
       }
     };
-
 
     btnDisconnect.onclick = async () => {
       try {
@@ -452,7 +626,7 @@ btnDisconnect.disabled = false;
         btnStart.disabled = true;
         btnStop.disabled = true;
         btnConnect.disabled = false;
-		btnSync.disabled = false;
+        btnSync.disabled = false;
       } catch (e) {
         log("disconnect error:", String(e?.message ?? e));
         setStatus("error");
@@ -461,12 +635,21 @@ btnDisconnect.disabled = false;
 
     btnStart.onclick = async () => {
       try {
+        // clear charts each time Start is pressed
+        resetAccelPlotBuffers(v?.accel1?.samplingRateHz ?? 51.2);
+        resetGsrPlotBuffers(v?.gsr?.samplingRateHz ?? 50);
+
+        accelPackets = 0;
+        gsrPackets = 0;
+        latestEl.textContent = "—";
+        latestGsrEl.textContent = "—";
+
         setStatus("starting stream...");
         await v.startStreaming();
-        setStatus("streaming (accel view)");
+        setStatus("streaming (accel+gsr view)");
         btnStart.disabled = true;
         btnStop.disabled = false;
-		btnSync.disabled = true;
+        btnSync.disabled = true;
       } catch (e) {
         log("start error:", String(e?.message ?? e));
         setStatus("error");
@@ -480,7 +663,7 @@ btnDisconnect.disabled = false;
         setStatus("connected");
         btnStart.disabled = false;
         btnStop.disabled = true;
-		btnSync.disabled = false;
+        btnSync.disabled = false;
       } catch (e) {
         log("stop error:", String(e?.message ?? e));
         setStatus("error");
@@ -488,44 +671,40 @@ btnDisconnect.disabled = false;
     };
 
     btnClear.onclick = () => { logEl.textContent = ""; };
-	
-	btnSync.onclick = async () => {
-  try {
-    if (!v) throw new Error("Not connected");
 
-    setStatus("syncing logged data...");
-    log("sync: choose output file...");
+    btnSync.onclick = async () => {
+      try {
+        if (!v) throw new Error("Not connected");
 
-    const fileHandle = await window.showSaveFilePicker({
-      suggestedName: `verisense_${new Date().toISOString().replace(/[:.]/g, "-")}.bin`,
-      types: [{
-        description: "Verisense binary",
-        accept: { "application/octet-stream": [".bin"] }
-      }]
-    });
+        setStatus("syncing logged data...");
+        log("sync: choose output file...");
 
-    // IMPORTANT: let verisense.js createWritable + write + close
-    v.debugSync = true;
+        const fileHandle = await window.showSaveFilePicker({
+          suggestedName: `verisense_${new Date().toISOString().replace(/[:.]/g, "-")}.bin`,
+          types: [{
+            description: "Verisense binary",
+            accept: { "application/octet-stream": [".bin"] }
+          }]
+        });
 
-    const res = await v.transferLoggedData({
-      fileHandle,
-      timeoutMs: 5000,
-      maxNack: 5,
-      maxCrcNack: 5,
-      onProgress: (p) => log("sync progress:", p),
-    });
+        v.debugSync = true;
 
-    setStatus("sync complete");
-    log("sync: complete ✅", res);
-  } catch (e) {
-    log("sync error:", String(e?.message ?? e));
-    console.warn(e);
-    setStatus("error");
-  }
-};
+        const res = await v.transferLoggedData({
+          fileHandle,
+          timeoutMs: 5000,
+          maxNack: 5,
+          maxCrcNack: 5,
+          onProgress: (p) => log("sync progress:", p),
+        });
 
-
-	
+        setStatus("sync complete");
+        log("sync: complete ✅", res);
+      } catch (e) {
+        log("sync error:", String(e?.message ?? e));
+        console.warn(e);
+        setStatus("error");
+      }
+    };
   </script>
 </body>
 </html>
