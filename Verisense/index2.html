@@ -47,6 +47,21 @@
     </div>
   </div>
 
+    <div class="card" style="margin-top:12px;">
+      <div class="row">
+        <b>Operational Config</b>
+        <button id="btnReadOpCfg" disabled>Read</button>
+        <button id="btnApplyOpCfg" disabled>Apply</button>
+        <span id="opcfgStatus" style="opacity:0.8;"></span>
+      </div>
+      <div class="row">
+        <label><input type="checkbox" id="chkAccelEnable" checked /> Accel1 enabled</label>
+        <label><input type="checkbox" id="chkGsrEnable" checked /> GSR enabled</label>
+        <label><input type="checkbox" id="chkBattEnable" checked /> Battery</label>
+        <small style="opacity:0.8;">(Checkboxes affect parsing immediately; <b>Apply</b> writes to device.)</small>
+      </div>
+    </div>
+
     <div class="grid">
     <div class="card">
       <h3>Latest accel sample</h3>
@@ -90,6 +105,13 @@
     const btnStop = $("btnStop");
     const btnClear = $("btnClear");
     const btnSync = $("btnSync");
+
+    const chkAccelEnable = $("chkAccelEnable");
+    const chkGsrEnable = $("chkGsrEnable");
+    const chkBattEnable = $("chkBattEnable");
+    const btnReadOpCfg = $("btnReadOpCfg");
+    const btnApplyOpCfg = $("btnApplyOpCfg");
+    const opcfgStatusEl = $("opcfgStatus");
 
     const deviceSelect = $("deviceSelect");
     const namePrefixEl = $("namePrefix");
@@ -329,6 +351,71 @@
 
     // Your Verisense instance
     let v = null;
+    let isStreaming = false;
+
+    function setOpCfgStatus(msg) {
+      if (!opcfgStatusEl) return;
+      opcfgStatusEl.textContent = msg ? ` ${msg}` : "";
+    }
+
+    function applyDecoderEnablesFromUI() {
+      if (!v) return;
+
+      // Decoder toggles (affects parsing/plotting only)
+      if (v.accel1) v.accel1.enabled = !!chkAccelEnable?.checked;
+
+      if (v.gsr?.setEnabled) {
+        const gsrOn = !!chkGsrEnable?.checked;
+        const battOn = !!chkBattEnable?.checked;
+        v.gsr.setEnabled({ gsr: gsrOn, batt: battOn && gsrOn });
+      } else if (v.gsr) {
+        v.gsr.gsrEnabled = !!chkGsrEnable?.checked;
+        v.gsr.battEnabled = !!chkBattEnable?.checked;
+      }
+    }
+
+    async function refreshOpConfigFromDevice({ refresh = true } = {}) {
+      if (!v) throw new Error("Not connected");
+      if (typeof v.getOpConfig !== "function") {
+        throw new Error("Missing getOpConfig(); use verisense_opcfg_patch_api.js");
+      }
+
+      setOpCfgStatus("reading...");
+      const op = await v.getOpConfig({ refresh });
+
+      // applyOperationalConfig updates these props
+      chkAccelEnable.checked = !!v?.accel1?.enabled;
+      chkGsrEnable.checked = !!v?.gsr?.gsrEnabled;
+      chkBattEnable.checked = !!v?.gsr?.battEnabled;
+
+      applyDecoderEnablesFromUI();
+      setOpCfgStatus(`len=${op?.length ?? 0}`);
+      return op;
+    }
+
+    async function applyOpConfigToDevice() {
+      if (!v) throw new Error("Not connected");
+      if (isStreaming) throw new Error("Stop streaming before applying opconfig");
+      if (typeof v.writeOpConfig !== "function") {
+        throw new Error("Missing writeOpConfig(); use verisense_opcfg_patch_api.js");
+      }
+
+      // Always patch against a fresh opcfg (prevents writing stale bytes)
+      const current = await v.getOpConfig({ refresh: true });
+      let next = current;
+
+      // Patch enable bits
+      if (v.accel1?.setEnabled) next = v.accel1.setEnabled(!!chkAccelEnable.checked, next);
+      if (v.gsr?.setEnabled) next = v.gsr.setEnabled({ gsr: !!chkGsrEnable.checked, batt: !!chkBattEnable.checked }, next);
+
+      setOpCfgStatus("writing...");
+      const confirmed = await v.writeOpConfig(next, { verify: true });
+
+      await refreshOpConfigFromDevice({ refresh: false });
+      setOpCfgStatus(`applied (len=${confirmed?.length ?? 0})`);
+      return confirmed;
+    }
+
 
     // packet counters
     let accelPackets = 0;
@@ -541,6 +628,9 @@
           btnStop.disabled = true;
           btnConnect.disabled = false;
           btnSync.disabled = true;
+          btnReadOpCfg.disabled = true;
+          btnApplyOpCfg.disabled = true;
+          setOpCfgStatus("");
         });
 
         setStatus("connecting...");
@@ -559,6 +649,9 @@
         btnStop.disabled = true;
         btnConnect.disabled = true;
         btnSync.disabled = false;
+        btnReadOpCfg.disabled = false;
+        btnApplyOpCfg.disabled = false;
+        await refreshOpConfigFromDevice({ refresh: true });
 
       } catch (e) {
         log("connect error:", String(e?.message ?? e));
@@ -585,6 +678,9 @@
           btnStart.disabled = true;
           btnStop.disabled = true;
           btnConnect.disabled = false;
+          btnReadOpCfg.disabled = true;
+          btnApplyOpCfg.disabled = true;
+          setOpCfgStatus("");
         });
 
         accelPackets = 0;
@@ -602,6 +698,9 @@
         btnStop.disabled = true;
         btnConnect.disabled = false; // BLE connect can remain available
         btnSync.disabled = false;
+        btnReadOpCfg.disabled = false;
+        btnApplyOpCfg.disabled = false;
+        await refreshOpConfigFromDevice({ refresh: true });
       } catch (e) {
         log("serial connect error:", String(e?.message ?? e));
         console.warn(e);
@@ -614,12 +713,16 @@
         setStatus("disconnecting...");
         await v?.disconnect?.({ reason: "ui btnDisconnect" });
         v = null;
+        isStreaming = false;
         setStatus("disconnected");
         btnDisconnect.disabled = true;
         btnStart.disabled = true;
         btnStop.disabled = true;
         btnConnect.disabled = false;
         btnSync.disabled = false;
+        btnReadOpCfg.disabled = true;
+        btnApplyOpCfg.disabled = true;
+        setOpCfgStatus("");
       } catch (e) {
         log("disconnect error:", String(e?.message ?? e));
         setStatus("error");
@@ -638,11 +741,15 @@
         latestGsrEl.textContent = "—";
 
         setStatus("starting stream...");
+        applyDecoderEnablesFromUI();
         await v.startStreaming();
+        isStreaming = true;
         setStatus("streaming (accel+gsr view)");
         btnStart.disabled = true;
         btnStop.disabled = false;
         btnSync.disabled = true;
+        btnReadOpCfg.disabled = true;
+        btnApplyOpCfg.disabled = true;
       } catch (e) {
         log("start error:", String(e?.message ?? e));
         setStatus("error");
@@ -653,10 +760,13 @@
       try {
         setStatus("stopping stream...");
         await v.stopStreaming();
+        isStreaming = false;
         setStatus("connected");
         btnStart.disabled = false;
         btnStop.disabled = true;
         btnSync.disabled = false;
+        btnReadOpCfg.disabled = false;
+        btnApplyOpCfg.disabled = false;
       } catch (e) {
         log("stop error:", String(e?.message ?? e));
         setStatus("error");
@@ -664,6 +774,32 @@
     };
 
     btnClear.onclick = () => { logEl.textContent = ""; };
+
+    btnReadOpCfg.onclick = async () => {
+      try {
+        if (!v) throw new Error("Not connected");
+        await refreshOpConfigFromDevice({ refresh: true });
+        log("opcfg read:", { accelEnabled: v?.accel1?.enabled, gsrEnabled: v?.gsr?.gsrEnabled, battEnabled: v?.gsr?.battEnabled });
+      } catch (e) {
+        log("opcfg read error:", String(e?.message ?? e));
+        setOpCfgStatus("error");
+      }
+    };
+
+    btnApplyOpCfg.onclick = async () => {
+      try {
+        if (!v) throw new Error("Not connected");
+        await applyOpConfigToDevice();
+        log("opcfg applied:", { accelEnabled: v?.accel1?.enabled, gsrEnabled: v?.gsr?.gsrEnabled, battEnabled: v?.gsr?.battEnabled });
+      } catch (e) {
+        log("opcfg apply error:", String(e?.message ?? e));
+        setOpCfgStatus("error");
+      }
+    };
+
+    chkAccelEnable.onchange = () => applyDecoderEnablesFromUI();
+    chkGsrEnable.onchange = () => applyDecoderEnablesFromUI();
+    chkBattEnable.onchange = () => applyDecoderEnablesFromUI();
 
     btnSync.onclick = async () => {
       try {

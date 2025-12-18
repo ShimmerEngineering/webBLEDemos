@@ -234,6 +234,34 @@ class SensorLIS2DW12 extends SensorBase {
     if (this.sensitivityByRange[rangeStr]) this.range = rangeStr;
   }
 
+  // --- OpConfig patch helpers (functional style) ---
+  // Usage: newOp = sensor.setEnabled(true, currentOp)
+  // (returns a *new* Uint8Array; does not mutate input)
+  setEnabled(enabled, opConfigBytes) {
+    // If called without op bytes, just set local decoder state
+    if (opConfigBytes == null) {
+      this.enabled = !!enabled;
+      return this.enabled;
+    }
+    if (typeof OP_IDX === "undefined" || OP_IDX.GEN_CFG_0 == null) {
+      throw new Error("OP_IDX.GEN_CFG_0 not defined; cannot patch accel1 enable");
+    }
+    const op = normalizeOperationalConfig(opConfigBytes);
+    const out = new Uint8Array(op); // clone
+    const idx = OP_IDX.GEN_CFG_0;
+
+    if (!!enabled) out[idx] = (out[idx] | 0x80) & 0xFF;     // bit7 = enable
+    else          out[idx] = (out[idx] & 0x7F) & 0xFF;
+
+    return out;
+  }
+
+  // alias for readability
+  setAccelEnabled(enabled, opConfigBytes) {
+    return this.setEnabled(enabled, opConfigBytes);
+  }
+
+
   _calibrate(raw) {
     // CalibrateInertialSensorData( raw, ALIGN, SENS, OFFSET )
     const v = [
@@ -565,10 +593,69 @@ class SensorGSR extends SensorBase {
   }
 
   setHardwareIdentifier(idStr) { this.hardwareIdentifier = idStr; }
-  setEnabled({ gsr, batt }) {
+  setEnabled(arg1, opConfigBytes) {
+    // Supports BOTH styles:
+    // 1) Legacy local flags: setEnabled({ gsr:true, batt:false })
+    // 2) Functional opcfg patch: newOp = setEnabled(true, currentOp)
+    //    or: newOp = setEnabled({ gsr:true, batt:false }, currentOp)
+
+    // --- (2) functional style: returns a *new* Uint8Array ---
+    if (opConfigBytes != null) {
+      const desired =
+        (typeof arg1 === "boolean") ? { gsr: arg1 } :
+        (arg1 && typeof arg1 === "object") ? arg1 :
+        {};
+      return this._patchEnabled(desired, opConfigBytes);
+    }
+
+    // --- (1) legacy style: just updates local decoder flags ---
+    const obj =
+      (typeof arg1 === "boolean") ? { gsr: arg1 } :
+      (arg1 && typeof arg1 === "object") ? arg1 :
+      {};
+    const { gsr, batt } = obj;
+
     if (typeof gsr === "boolean") this.gsrEnabled = gsr;
     if (typeof batt === "boolean") this.battEnabled = batt;
+
+    return { gsr: this.gsrEnabled, batt: this.battEnabled };
   }
+
+  _patchEnabled({ gsr, batt } = {}, opConfigBytes) {
+    if (typeof OP_IDX === "undefined") {
+      throw new Error("OP_IDX not defined; cannot patch GSR enable bits");
+    }
+    const op = normalizeOperationalConfig(opConfigBytes);
+    const out = new Uint8Array(op); // clone
+
+    // GEN_CFG_1 bit7 = GSR enable (per your C#)
+    if (typeof gsr === "boolean") {
+      if (OP_IDX.GEN_CFG_1 == null) throw new Error("OP_IDX.GEN_CFG_1 missing");
+      const idx = OP_IDX.GEN_CFG_1;
+      if (gsr) out[idx] = (out[idx] | 0x80) & 0xFF;
+      else     out[idx] = (out[idx] & 0x7F) & 0xFF;
+    }
+
+    // GEN_CFG_2 bit1 = Batt enable (per your C#)
+    if (typeof batt === "boolean") {
+      if (OP_IDX.GEN_CFG_2 == null) throw new Error("OP_IDX.GEN_CFG_2 missing");
+      const idx = OP_IDX.GEN_CFG_2;
+      if (batt) out[idx] = (out[idx] | 0x02) & 0xFF;
+      else      out[idx] = (out[idx] & 0xFD) & 0xFF;
+    }
+
+    return out;
+  }
+
+  // Convenience aliases
+  setGSREnabled(enabled, opConfigBytes) {
+    return this.setEnabled(enabled, opConfigBytes);
+  }
+  setBattEnabled(enabled, opConfigBytes) {
+    return this.setEnabled({ batt: enabled }, opConfigBytes);
+  }
+
+  
   setGsrRangeSetting(v /*0..4*/) { this.gsrRangeSetting = v; }
 
   calibrateAdcToVolts(uncal12bit) {
@@ -629,7 +716,7 @@ class SensorGSR extends SensorBase {
     // Rate/range/oversampling are stored for debugging (mapping tables can be added later)
     const rateCfg = (op[OP_IDX.ADC_CHANNEL_SETTINGS_0] ?? 0) & 0x3F;
     const cfg1 = (op[OP_IDX.ADC_CHANNEL_SETTINGS_1] ?? 0) & 0xFF;
-    const rangeCfg = cfg1>>5 & 0x07;
+    const rangeCfg = cfg1 & 0x07;
     const oversamplingCfg = (cfg1 >> 4) & 0x0F;
 
     this.gsrRateSettingRaw = rateCfg;
@@ -1418,6 +1505,7 @@ async _handleLoggedPayload(payloadU8) {
 
   _onRx(bytes) {
   try {
+	  console.log('RX BYTES: ' + bytes);
     if (this._mode === "logged" && this.debugSync) {
       this._syncRxCount++;
       if (this._syncRxCount <= 25 || (this._syncRxCount % 100) === 0) {
@@ -1663,6 +1751,115 @@ _clearSyncRxBuffers(reason = "") {
 }
 
   
+
+  // -----------------------------------------------------------------
+  // Operational Config helpers (device-level)
+  // -----------------------------------------------------------------
+
+  /**
+   * Get the currently cached operational config (Uint8Array).
+   * If not present, reads it from the device.
+   */
+  async getOpConfig() {
+  // NOTE: This is a *cache-only* getter. It never talks to the device.
+  // Use readOpConfigFromDevice() when you explicitly want to refresh.
+  if (this.operationalConfig && this.operationalConfig.length) {
+    return new Uint8Array(this.operationalConfig);
+  }
+  throw new Error("Operational config not cached. Call readOpConfigFromDevice() first.");
+}
+
+/**
+ * Read operational config from the device (opcode 0x14), normalize it,
+ * cache it on this.operationalConfig, and apply it to sensor decoders.
+ */
+async readOpConfigFromDevice() {
+  if (typeof this.readOperationalConfig !== "function") {
+    throw new Error("readOperationalConfig() not implemented in this build");
+  }
+
+  const rsp = await this.readOperationalConfig(); // { payload }
+  const payload = rsp?.payload;
+  const op = normalizeOperationalConfig(payload);
+
+  if (!op || !op.length || op[0] !== 0x5A) {
+    throw new Error("Invalid operational config returned from device");
+  }
+
+  this.operationalConfig = op;
+
+  // Apply to sensors (best-effort)
+  try {
+    if (this.accel1?.applyOperationalConfig) this.accel1.applyOperationalConfig(op);
+    if (this.gyroAccel2?.applyOperationalConfig) this.gyroAccel2.applyOperationalConfig(op);
+    if (this.gsr?.applyOperationalConfig) this.gsr.applyOperationalConfig(op);
+    if (this.ppg?.applyOperationalConfig) this.ppg.applyOperationalConfig(op);
+  } catch (e) {
+    console.warn("[opcfg] apply after read failed:", e);
+  }
+
+  return new Uint8Array(op);
+}
+
+
+  // aliases (to match your pseudo-code style)
+  async getopconfig(opts) { return this.getOpConfig(opts); }
+  async GetOpConfig(opts) { return this.getOpConfig(opts); }
+
+  /**
+   * Write operational config bytes to the device, then optionally verify by reading back.
+   * 
+   */
+  async writeOpConfig(opConfigBytes, _opts = {}) {
+	const op = normalizeOperationalConfig(opConfigBytes);
+	if (!op || op.length < 4) throw new Error("writeOpConfig: invalid opconfig");
+	if (op[0] !== 0x5A) throw new Error("writeOpConfig: opconfig must start with 0x5A");
+
+	const WRITE_OPCFG = 0x24;
+
+	// 1) send write (don’t wait for an RX reply that may never come)
+	const req = this._makeReq(WRITE_OPCFG, op);
+
+	// (optional but recommended for BLE robustness)
+	await this.writeBytes(req, { withResponse: true });
+
+	// 2) ALWAYS read back + reparse (this is your “real confirmation”)
+	await this.readOperationalConfig(); // should update this.operationalConfig internally
+	const confirmed = new Uint8Array(this.operationalConfig);
+
+	// 3) re-apply to sensors from the confirmed bytes
+	try {
+	  this.accel1?.applyOperationalConfig?.(confirmed);
+	  this.gyroAccel2?.applyOperationalConfig?.(confirmed);
+	  this.gsr?.applyOperationalConfig?.(confirmed);
+	  this.ppg?.applyOperationalConfig?.(confirmed);
+	} catch (e) {
+	  console.warn("[opcfg] apply after write failed:", e);
+	}
+
+	return confirmed;
+
+}
+
+
+  async writeopconfig(opConfigBytes, opts) { return this.writeOpConfig(opConfigBytes, opts); }
+  async WriteOpConfig(opConfigBytes, opts) { return this.writeOpConfig(opConfigBytes, opts); }
+
+  /**
+   * Convenience: get a sensor by name.
+   * Accepts: "LIS2DW12"|"accel1", "LSM6DS3"|"gyroAccel2", "GSR", "PPG"
+   */
+  getSensor(name) {
+    const k = String(name ?? "").toLowerCase();
+    if (!k) return null;
+    if (k.includes("lis2dw12") || k.includes("accel1") || k === "2") return this.accel1 ?? null;
+    if (k.includes("lsm6") || k.includes("gyro") || k.includes("accel2") || k === "3") return this.gyroAccel2 ?? null;
+    if (k.includes("gsr") || k === "1") return this.gsr ?? null;
+    if (k.includes("ppg") || k === "4") return this.ppg ?? null;
+    return null;
+  }
+  GetSensor(name) { return this.getSensor(name); }
+
 }
 
 
