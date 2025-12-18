@@ -1824,20 +1824,7 @@ async readOpConfigFromDevice() {
 	await this.writeBytes(req, { withResponse: true });
 
 	// 2) ALWAYS read back + reparse (this is your “real confirmation”)
-	await this.readOperationalConfig(); // should update this.operationalConfig internally
-	const confirmed = new Uint8Array(this.operationalConfig);
-
-	// 3) re-apply to sensors from the confirmed bytes
-	try {
-	  this.accel1?.applyOperationalConfig?.(confirmed);
-	  this.gyroAccel2?.applyOperationalConfig?.(confirmed);
-	  this.gsr?.applyOperationalConfig?.(confirmed);
-	  this.ppg?.applyOperationalConfig?.(confirmed);
-	} catch (e) {
-	  console.warn("[opcfg] apply after write failed:", e);
-	}
-
-	return confirmed;
+	await this.readOpConfigFromDevice(); // should update this.operationalConfig internally
 
 }
 

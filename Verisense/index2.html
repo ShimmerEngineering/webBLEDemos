@@ -109,6 +109,38 @@
     const chkAccelEnable = $("chkAccelEnable");
     const chkGsrEnable = $("chkGsrEnable");
     const chkBattEnable = $("chkBattEnable");
+
+// --- OpConfig UI helpers ---
+function enforceGsrBattUI() {
+  const gsrOn = !!chkGsrEnable.checked;
+  chkBattEnable.disabled = !gsrOn;
+  if (!gsrOn) chkBattEnable.checked = false;
+}
+
+function syncOpCfgUIFromDeviceState() {
+  if (!v) return;
+  chkAccelEnable.checked = !!v?.accel1?.enabled;
+  chkGsrEnable.checked = !!v?.gsr?.gsrEnabled;
+  chkBattEnable.checked = !!v?.gsr?.battEnabled;
+  enforceGsrBattUI();
+}
+
+// Keep decoder flags + dependent UI in sync while the user toggles checkboxes
+chkAccelEnable.addEventListener("change", () => {
+  applyDecoderEnablesFromUI();
+});
+chkGsrEnable.addEventListener("change", () => {
+  enforceGsrBattUI();
+  applyDecoderEnablesFromUI();
+});
+chkBattEnable.addEventListener("change", () => {
+  enforceGsrBattUI();
+  applyDecoderEnablesFromUI();
+});
+
+    // Ensure initial dependent states are correct
+    enforceGsrBattUI();
+
     const btnReadOpCfg = $("btnReadOpCfg");
     const btnApplyOpCfg = $("btnApplyOpCfg");
     const opcfgStatusEl = $("opcfgStatus");
@@ -383,13 +415,10 @@
       setOpCfgStatus("reading...");
       const op = await v.getOpConfig({ refresh });
 
-      // applyOperationalConfig updates these props
-      chkAccelEnable.checked = !!v?.accel1?.enabled;
-      chkGsrEnable.checked = !!v?.gsr?.gsrEnabled;
-      chkBattEnable.checked = !!v?.gsr?.battEnabled;
-
+      // applyOperationalConfig updates sensor state; reflect it into the UI
+      syncOpCfgUIFromDeviceState();
       applyDecoderEnablesFromUI();
-      setOpCfgStatus(`len=${op?.length ?? 0}`);
+setOpCfgStatus(`len=${op?.length ?? 0}`);
       return op;
     }
 
@@ -411,8 +440,9 @@
       setOpCfgStatus("writing...");
       const confirmed = await v.writeOpConfig(next, { verify: true });
 
-      await refreshOpConfigFromDevice({ refresh: false });
-      setOpCfgStatus(`applied (len=${confirmed?.length ?? 0})`);
+      // writeOpConfig() reads back + applies; update UI from device state now
+      syncOpCfgUIFromDeviceState();
+setOpCfgStatus(`applied (len=${confirmed?.length ?? 0})`);
       return confirmed;
     }
 
