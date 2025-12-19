@@ -22,13 +22,6 @@
   <div class="card">
 
     <div class="row">
-      <button id="btnScan">Scan / Select Device</button>
-      
-      <label>Selected:</label>
-      <select id="deviceSelect" style="min-width: 360px;">
-        <option value="">(none)</option>
-      </select>
-
       <button id="btnConnect" disabled>Connect (BLE)</button>
       <button id="btnConnectSerial">Connect USB (Serial)</button>
       <button id="btnDisconnect" disabled>Disconnect</button>
@@ -90,8 +83,8 @@
     const latestGsrEl = $("latestGsr");
     const statusEl = $("status");
 
-    const btnScan = $("btnScan");
     const btnConnect = $("btnConnect");
+	btnConnect.disabled = false;
     const btnDisconnect = $("btnDisconnect");
     const btnConnectSerial = $("btnConnectSerial");
     const btnStart = $("btnStart");
@@ -430,7 +423,7 @@ chkBattEnable.addEventListener("change", () => {
       if (v.gsr?.setEnabled) {
 	    next = v.gsr.setEnabled({ gsr: !!chkGsrEnable.checked, batt: !!chkBattEnable.checked }, next);
         next = v.gsr.patchGsrRange(4,next);
-	    next = v.gsr.patchGsrRange(23,next);
+	    next = v.gsr.patchGsrSamplingRate(23,next);
 	  }
 
       const confirmed = await v.writeOpConfig(next, { verify: true });
@@ -594,32 +587,17 @@ chkBattEnable.addEventListener("change", () => {
 
     // --- UI actions ---
 
-    btnScan.onclick = async () => {
-      try {
-        setStatus("scanning (chooser)...");
-        const namePrefix = "Verisense";
-
-        const opts = namePrefix
-          ? { filters: [{ namePrefix }, { services: [VerisenseBleDevice.NUS_SERVICE] }], optionalServices: [VerisenseBleDevice.NUS_SERVICE] }
-          : { filters: [{ services: [VerisenseBleDevice.NUS_SERVICE] }], optionalServices: [VerisenseBleDevice.NUS_SERVICE] };
-
-        const dev = await navigator.bluetooth.requestDevice(opts);
-        upsertDeviceOption(dev);
-        log("authorized device:", { name: dev.name, id: dev.id });
-        setStatus("device selected");
-      } catch (e) {
-        log("scan/select error:", String(e?.message ?? e));
-        setStatus("idle");
-      }
-    };
-
-    deviceSelect.onchange = () => {
-      btnConnect.disabled = !getSelectedDevice();
-    };
-
     btnConnect.onclick = async () => {
+	  setStatus("scanning (chooser)...");
+      const namePrefix = "Verisense";
+
+      const opts = namePrefix
+        ? { filters: [{ namePrefix }, { services: [VerisenseBleDevice.NUS_SERVICE] }], optionalServices: [VerisenseBleDevice.NUS_SERVICE] }
+        : { filters: [{ services: [VerisenseBleDevice.NUS_SERVICE] }], optionalServices: [VerisenseBleDevice.NUS_SERVICE] };
+
+      const dev = await navigator.bluetooth.requestDevice(opts);
+      log("authorized device:", { name: dev.name, id: dev.id });
       try {
-        const dev = getSelectedDevice();
         if (!dev) throw new Error("No device selected");
 
         v = new VerisenseBleDevice({
