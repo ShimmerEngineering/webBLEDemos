@@ -20,15 +20,10 @@
   <small>Must be served over <b>https</b> or <b>http://localhost</b>. Click buttons (user gesture required).</small>
 
   <div class="card">
-    <div class="row">
-      <label>Name prefix (optional):</label>
-      <input id="namePrefix" placeholder="e.g. VERISENSE" />
-    </div>
 
     <div class="row">
       <button id="btnScan">Scan / Select Device</button>
-      <button id="btnRefreshKnown">Refresh Known Devices</button>
-
+      
       <label>Selected:</label>
       <select id="deviceSelect" style="min-width: 360px;">
         <option value="">(none)</option>
@@ -97,7 +92,6 @@
     const statusEl = $("status");
 
     const btnScan = $("btnScan");
-    const btnRefreshKnown = $("btnRefreshKnown");
     const btnConnect = $("btnConnect");
     const btnDisconnect = $("btnDisconnect");
     const btnConnectSerial = $("btnConnectSerial");
@@ -146,7 +140,6 @@ chkBattEnable.addEventListener("change", () => {
     const opcfgStatusEl = $("opcfgStatus");
 
     const deviceSelect = $("deviceSelect");
-    const namePrefixEl = $("namePrefix");
 
     // ----------------------------
     // ACCEL PLOT (ring buffer)
@@ -412,13 +405,11 @@ chkBattEnable.addEventListener("change", () => {
         throw new Error("Missing getOpConfig(); use verisense_opcfg_patch_api.js");
       }
 
-      setOpCfgStatus("reading...");
       const op = await v.getOpConfig({ refresh });
 
       // applyOperationalConfig updates sensor state; reflect it into the UI
       syncOpCfgUIFromDeviceState();
       applyDecoderEnablesFromUI();
-setOpCfgStatus(`len=${op?.length ?? 0}`);
       return op;
     }
 
@@ -434,15 +425,20 @@ setOpCfgStatus(`len=${op?.length ?? 0}`);
       let next = current;
 
       // Patch enable bits
-      if (v.accel1?.setEnabled) next = v.accel1.setEnabled(!!chkAccelEnable.checked, next);
-      if (v.gsr?.setEnabled) next = v.gsr.setEnabled({ gsr: !!chkGsrEnable.checked, batt: !!chkBattEnable.checked }, next);
+      if (v.accel1?.setEnabled){
+	    next = v.accel1.setEnabled(!!chkAccelEnable.checked, next);
+	    next = v.accel1.patchAccelSamplingRate(9,next);
+	  }
+      if (v.gsr?.setEnabled) {
+	    next = v.gsr.setEnabled({ gsr: !!chkGsrEnable.checked, batt: !!chkBattEnable.checked }, next);
+        next = v.gsr.patchGsrRange(4,next);
+	    next = v.gsr.patchGsrRange(23,next);
+	  }
 
-      setOpCfgStatus("writing...");
       const confirmed = await v.writeOpConfig(next, { verify: true });
 
       // writeOpConfig() reads back + applies; update UI from device state now
       syncOpCfgUIFromDeviceState();
-setOpCfgStatus(`applied (len=${confirmed?.length ?? 0})`);
       return confirmed;
     }
 
@@ -603,7 +599,7 @@ setOpCfgStatus(`applied (len=${confirmed?.length ?? 0})`);
     btnScan.onclick = async () => {
       try {
         setStatus("scanning (chooser)...");
-        const namePrefix = namePrefixEl.value.trim();
+        const namePrefix = "Verisense";
 
         const opts = namePrefix
           ? { filters: [{ namePrefix }, { services: [VerisenseBleDevice.NUS_SERVICE] }], optionalServices: [VerisenseBleDevice.NUS_SERVICE] }
@@ -616,20 +612,6 @@ setOpCfgStatus(`applied (len=${confirmed?.length ?? 0})`);
       } catch (e) {
         log("scan/select error:", String(e?.message ?? e));
         setStatus("idle");
-      }
-    };
-
-    btnRefreshKnown.onclick = async () => {
-      try {
-        if (!navigator.bluetooth.getDevices) {
-          log("getDevices() not supported in this browser yet.");
-          return;
-        }
-        const known = await navigator.bluetooth.getDevices();
-        log(`known devices: ${known.length}`);
-        for (const dev of known) upsertDeviceOption(dev);
-      } catch (e) {
-        log("refresh known error:", String(e?.message ?? e));
       }
     };
 
@@ -812,7 +794,7 @@ setOpCfgStatus(`applied (len=${confirmed?.length ?? 0})`);
         log("opcfg read:", { accelEnabled: v?.accel1?.enabled, gsrEnabled: v?.gsr?.gsrEnabled, battEnabled: v?.gsr?.battEnabled });
       } catch (e) {
         log("opcfg read error:", String(e?.message ?? e));
-        setOpCfgStatus("error");
+        
       }
     };
 
@@ -823,7 +805,7 @@ setOpCfgStatus(`applied (len=${confirmed?.length ?? 0})`);
         log("opcfg applied:", { accelEnabled: v?.accel1?.enabled, gsrEnabled: v?.gsr?.gsrEnabled, battEnabled: v?.gsr?.battEnabled });
       } catch (e) {
         log("opcfg apply error:", String(e?.message ?? e));
-        setOpCfgStatus("error");
+        
       }
     };
 

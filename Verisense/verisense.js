@@ -298,7 +298,23 @@ class SensorLIS2DW12 extends SensorBase {
     return out;
   }
   
-    applyOperationalConfig(op) {
+  // inside SensorLIS2DW12 class
+
+  patchAccelRange(rangeCfg /*0..3*/, op) {
+    const out = new Uint8Array(op);
+    const i = OP_IDX.ACCEL1_CFG_1;
+    out[i] = (out[i] & 0b11001111) | ((rangeCfg & 0x03) << 4); // :contentReference[oaicite:9]{index=9}
+    return out;
+  }
+
+  patchAccelSamplingRate(rateCfg /*0..15*/, op) {
+    const out = new Uint8Array(op);
+    const i = OP_IDX.ACCEL1_CFG_0;
+    out[i] = (out[i] & 0b00001111) | ((rateCfg & 0x0F) << 4); // :contentReference[oaicite:10]{index=10}
+    return out;
+  }
+
+  applyOperationalConfig(op) {
   console.log("[LIS2DW12] applyOperationalConfig()");
   console.log("[LIS2DW12] op len =", op?.length, "op[0]=", op ? `0x${op[0].toString(16)}` : "(null)");
   console.log("GEN_CFG_0", OP_IDX.GEN_CFG_0);
@@ -646,7 +662,28 @@ class SensorGSR extends SensorBase {
 
     return out;
   }
+  
+  patchGsrRange(rangeCfg /*0..4*/, op) {
+    const out = new Uint8Array(op);
+    const i = OP_IDX.ADC_CHANNEL_SETTINGS_1;
+    out[i] = (out[i] & 0b11111000) | (rangeCfg & 0x07); // :contentReference[oaicite:11]{index=11}
+    return out;
+  }
 
+  patchGsrSamplingRate(rateCfg /*0..63*/, op) {
+    const out = new Uint8Array(op);
+    const i = OP_IDX.ADC_CHANNEL_SETTINGS_0;
+    out[i] = (out[i] & 0b11000000) | (rateCfg & 0x3F); // :contentReference[oaicite:12]{index=12}
+    return out;
+  }
+
+  patchGsrOversampling(overCfg /*0..15*/, op) {
+    const out = new Uint8Array(op);
+    const i = OP_IDX.ADC_CHANNEL_SETTINGS_1;
+    out[i] = (out[i] & 0b00001111) | ((overCfg & 0x0F) << 4); // :contentReference[oaicite:13]{index=13}
+    return out;
+  
+  }
   // Convenience aliases
   setGSREnabled(enabled, opConfigBytes) {
     return this.setEnabled(enabled, opConfigBytes);
@@ -898,89 +935,8 @@ export class VerisenseBleDevice extends TinyEmitter {
     });
 	console.log(`CONNECT`);
     this.emit("connected", { name: this.device.name, id: this.device.id });
-	
-	 // ---- NEW: read op config + apply it to sensors ----
-try {
-  console.log("[opcfg] requesting readOperationalConfig (0x14)...");
-  const t0 = performance.now();
-
-  const rsp = await this.readOperationalConfig(); // { payload }
-  const dt = (performance.now() - t0).toFixed(1);
-
-  const payload = rsp?.payload;
-  console.log(`[opcfg] response received in ${dt} ms`);
-  console.log("[opcfg] payload type:", payload?.constructor?.name);
-  console.log("[opcfg] payload len:", payload?.length);
-
-  // hex dump helper (inline)
-  const toHex = (u8, max = 96) => {
-    if (!u8) return "(null)";
-    const a = Array.from(u8.slice(0, max)).map(b => b.toString(16).padStart(2, "0")).join(" ");
-    return u8.length > max ? `${a} … (+${u8.length - max} bytes)` : a;
-  };
-
-  console.log("[opcfg] payload head:", toHex(payload, 96));
-
-  const op = normalizeOperationalConfig(payload);
-  console.log("[opcfg] normalized len:", op?.length);
-  console.log("[opcfg] normalized head:", toHex(op, 96));
-  console.log("[opcfg] normalized startsWith 0x5A:", op?.[0] === 0x5A);
-
-  // If you have OP_IDX defined, log the important bytes
-  if (typeof OP_IDX !== "undefined") {
-    const safe = (idx) => (op && idx >= 0 && idx < op.length) ? op[idx] : null;
-    const logByte = (name, idx) => {
-      const v = safe(idx);
-      console.log(`[opcfg] ${name} @${idx}:`, v == null ? "OUT_OF_RANGE" : `0x${v.toString(16).padStart(2,"0")} (${v})`);
-    };
-
-    logByte("GEN_CFG_0", OP_IDX.GEN_CFG_0);
-    logByte("ACCEL1_CFG_0", OP_IDX.ACCEL1_CFG_0);
-    logByte("ACCEL1_CFG_1", OP_IDX.ACCEL1_CFG_1);
-    logByte("ACCEL1_CFG_2", OP_IDX.ACCEL1_CFG_2);
-    logByte("GYRO_ACCEL2_CFG_4", OP_IDX.GYRO_ACCEL2_CFG_4);
-    logByte("GYRO_ACCEL2_CFG_5", OP_IDX.GYRO_ACCEL2_CFG_5);
-  } else {
-    console.warn("[opcfg] OP_IDX not defined; skipping per-field byte logging.");
-  }
-
-  this.operationalConfig = op;
-
-  // Before/after snapshots
-  console.log("[opcfg] accel1 BEFORE:", { range: this.accel1.range, hz: this.accel1.samplingRateHz, enabled: this.accel1.enabled });
-  this.accel1.applyOperationalConfig(op);
-  console.log("[opcfg] gsr BEFORE:" + this.gsr.gsrRangeSetting);
-  this.gsr.applyOperationalConfig(op);
-  console.log("[opcfg] gsr AFTER:" + this.gsr.gsrRangeSetting);
-  console.log("[opcfg] accel1 AFTER :", { range: this.accel1.range, hz: this.accel1.samplingRateHz, enabled: this.accel1.enabled });
-
-  console.log("[opcfg] gyroAccel2 BEFORE:", {
-    accEnabled: this.gyroAccel2.accEnabled,
-    gyroEnabled: this.gyroAccel2.gyroEnabled,
-    accRange: this.gyroAccel2.accRange,
-    gyroRange: this.gyroAccel2.gyroRange,
-    hz: this.gyroAccel2.samplingRateHz
-  });
-  if (typeof this.gyroAccel2.applyOperationalConfig === "function") {
-    this.gyroAccel2.applyOperationalConfig(op);
-  } else {
-    console.warn("[opcfg] gyroAccel2.applyOperationalConfig() is missing (did you paste it into the wrong class?)");
-  }
-  console.log("[opcfg] gyroAccel2 AFTER :", {
-    accEnabled: this.gyroAccel2.accEnabled,
-    gyroEnabled: this.gyroAccel2.gyroEnabled,
-    accRange: this.gyroAccel2.accRange,
-    gyroRange: this.gyroAccel2.gyroRange,
-    hz: this.gyroAccel2.samplingRateHz
-  });
-
-  this.emit("opConfig", { op });
-  console.log("[opcfg] done.");
-} catch (e) {
-  console.warn("[opcfg] FAILED:", e);
-  this.emit("opConfigError", { error: String(e?.message ?? e), stack: e?.stack });
-}
-
+	 
+	await this.readOpConfigFromDevice();
 	
     return true;
   }
@@ -1029,35 +985,7 @@ try {
     this._startSerialReadLoop(this._serialAbort.signal);
 
     this.emit("connected", { kind: "serial" });
-
-    // Optionally: read operational config on connect (same as BLE)
-    try {
-      const rsp = await this.readOperationalConfig();
-      const op = normalizeOperationalConfig(rsp?.payload);
-	  
-	  const toHex = (u8, max = 96) => {
-	  if (!u8) return "(null)";
-        const a = Array.from(u8.slice(0, max)).map(b => b.toString(16).padStart(2,"0")).join(" ");
-        return u8.length > max ? `${a} … (+${u8.length - max} bytes)` : a;
-      };
-
-	  console.log("[opcfg][serial] payload type:", rsp?.payload?.constructor?.name);
-      console.log("[opcfg][serial] payload len :", rsp?.payload?.length); 
-      console.log("[opcfg][serial] payload head:", toHex(rsp?.payload, 96));
-      console.log("[opcfg][serial] normalized len :", op?.length);
-      console.log("[opcfg][serial] normalized head:", toHex(op, 96));
-
-      if (op) {
-        this.operationalConfig = op;
-        this.accel1?.applyOperationalConfig?.(op);
-        this.gyroAccel2?.applyOperationalConfig?.(op);
-		this.gsr?.applyOperationalConfig?.(op);
-        this.emit("opConfig", { op });
-      }
-    } catch (e) {
-      this.emit("opConfigError", { error: String(e?.message ?? e), stack: e?.stack });
-    }
-
+	await this.readOpConfigFromDevice();
     return true;
   }
 
@@ -1798,13 +1726,30 @@ async readOpConfigFromDevice() {
     console.warn("[opcfg] apply after read failed:", e);
   }
 
+  console.log("[opcfg] Accel1 :", {
+    accEnabled: this.accel1.accEnabled,
+    accRange: this.accel1.accRange,
+    hz: this.accel1.samplingRateHz
+  });
+  console.log("[opcfg] gyroAccel2 :", {
+    accEnabled: this.gyroAccel2.accEnabled,
+    gyroEnabled: this.gyroAccel2.gyroEnabled,
+    accRange: this.gyroAccel2.accRange,
+    gyroRange: this.gyroAccel2.gyroRange,
+    hz: this.gyroAccel2.samplingRateHz
+  });
+  console.log("[opcfg] gsr :", {
+    gsrEnabled: this.gsr.gsrEnabled,
+    gsrRange: this.gsr.gsrRangeSetting,
+    hz: this.gsr.samplingRateHz
+  });
+  this.emit("opConfig", { op });
   return new Uint8Array(op);
 }
 
 
   // aliases (to match your pseudo-code style)
   async getopconfig(opts) { return this.getOpConfig(opts); }
-  async GetOpConfig(opts) { return this.getOpConfig(opts); }
 
   /**
    * Write operational config bytes to the device, then optionally verify by reading back.
@@ -1830,7 +1775,6 @@ async readOpConfigFromDevice() {
 
 
   async writeopconfig(opConfigBytes, opts) { return this.writeOpConfig(opConfigBytes, opts); }
-  async WriteOpConfig(opConfigBytes, opts) { return this.writeOpConfig(opConfigBytes, opts); }
 
   /**
    * Convenience: get a sensor by name.
