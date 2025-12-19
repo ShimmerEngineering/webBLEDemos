@@ -45,7 +45,6 @@
     <div class="card" style="margin-top:12px;">
       <div class="row">
         <b>Operational Config</b>
-        <button id="btnReadOpCfg" disabled>Read</button>
         <button id="btnApplyOpCfg" disabled>Apply</button>
         <span id="opcfgStatus" style="opacity:0.8;"></span>
       </div>
@@ -135,7 +134,6 @@ chkBattEnable.addEventListener("change", () => {
     // Ensure initial dependent states are correct
     enforceGsrBattUI();
 
-    const btnReadOpCfg = $("btnReadOpCfg");
     const btnApplyOpCfg = $("btnApplyOpCfg");
     const opcfgStatusEl = $("opcfgStatus");
 
@@ -640,7 +638,6 @@ chkBattEnable.addEventListener("change", () => {
           btnStop.disabled = true;
           btnConnect.disabled = false;
           btnSync.disabled = true;
-          btnReadOpCfg.disabled = true;
           btnApplyOpCfg.disabled = true;
           setOpCfgStatus("");
         });
@@ -661,7 +658,6 @@ chkBattEnable.addEventListener("change", () => {
         btnStop.disabled = true;
         btnConnect.disabled = true;
         btnSync.disabled = false;
-        btnReadOpCfg.disabled = false;
         btnApplyOpCfg.disabled = false;
         await refreshOpConfigFromDevice({ refresh: true });
 
@@ -690,7 +686,6 @@ chkBattEnable.addEventListener("change", () => {
           btnStart.disabled = true;
           btnStop.disabled = true;
           btnConnect.disabled = false;
-          btnReadOpCfg.disabled = true;
           btnApplyOpCfg.disabled = true;
           setOpCfgStatus("");
         });
@@ -710,7 +705,6 @@ chkBattEnable.addEventListener("change", () => {
         btnStop.disabled = true;
         btnConnect.disabled = false; // BLE connect can remain available
         btnSync.disabled = false;
-        btnReadOpCfg.disabled = false;
         btnApplyOpCfg.disabled = false;
         await refreshOpConfigFromDevice({ refresh: true });
       } catch (e) {
@@ -732,7 +726,6 @@ chkBattEnable.addEventListener("change", () => {
         btnStop.disabled = true;
         btnConnect.disabled = false;
         btnSync.disabled = false;
-        btnReadOpCfg.disabled = true;
         btnApplyOpCfg.disabled = true;
         setOpCfgStatus("");
       } catch (e) {
@@ -760,7 +753,6 @@ chkBattEnable.addEventListener("change", () => {
         btnStart.disabled = true;
         btnStop.disabled = false;
         btnSync.disabled = true;
-        btnReadOpCfg.disabled = true;
         btnApplyOpCfg.disabled = true;
       } catch (e) {
         log("start error:", String(e?.message ?? e));
@@ -777,7 +769,6 @@ chkBattEnable.addEventListener("change", () => {
         btnStart.disabled = false;
         btnStop.disabled = true;
         btnSync.disabled = false;
-        btnReadOpCfg.disabled = false;
         btnApplyOpCfg.disabled = false;
       } catch (e) {
         log("stop error:", String(e?.message ?? e));
@@ -786,17 +777,6 @@ chkBattEnable.addEventListener("change", () => {
     };
 
     btnClear.onclick = () => { logEl.textContent = ""; };
-
-    btnReadOpCfg.onclick = async () => {
-      try {
-        if (!v) throw new Error("Not connected");
-        await refreshOpConfigFromDevice({ refresh: true });
-        log("opcfg read:", { accelEnabled: v?.accel1?.enabled, gsrEnabled: v?.gsr?.gsrEnabled, battEnabled: v?.gsr?.battEnabled });
-      } catch (e) {
-        log("opcfg read error:", String(e?.message ?? e));
-        
-      }
-    };
 
     btnApplyOpCfg.onclick = async () => {
       try {
