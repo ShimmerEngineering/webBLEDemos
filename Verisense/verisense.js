@@ -666,7 +666,7 @@ class SensorGSR extends SensorBase {
   patchGsrRange(rangeCfg /*0..4*/, op) {
     const out = new Uint8Array(op);
     const i = OP_IDX.ADC_CHANNEL_SETTINGS_1;
-    out[i] = (out[i] & 0b00011111) | ((rangeCfg & 0x07) << 5); // :contentReference[oaicite:11]{index=11}
+    out[i] = (out[i] & 0b11111000) | (rangeCfg & 0x07); // :contentReference[oaicite:11]{index=11}
     return out;
   }
 
@@ -753,7 +753,7 @@ class SensorGSR extends SensorBase {
     // Rate/range/oversampling are stored for debugging (mapping tables can be added later)
     const rateCfg = (op[OP_IDX.ADC_CHANNEL_SETTINGS_0] ?? 0) & 0x3F;
     const cfg1 = (op[OP_IDX.ADC_CHANNEL_SETTINGS_1] ?? 0) & 0xFF;
-    const rangeCfg = (cfg1 >> 5) & 0x07;
+    const rangeCfg = cfg1 & 0x07;
     const oversamplingCfg = (cfg1 >> 4) & 0x0F;
 
     this.gsrRateSettingRaw = rateCfg;
