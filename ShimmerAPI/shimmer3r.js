@@ -96,7 +96,7 @@ export class Shimmer3RClient {
     // Stash for ACK+RSP in same notify
     this._lastAckRemainder = null; // Uint8Array | null
     this.enabledSensors = 0x000000; // store 24-bit bitmask
-
+	this.ExpPower = 0;	
     // NEW: ACK expectation counter and streaming state
     this._expectingAck = 0;
     this._streaming = false;
@@ -132,6 +132,8 @@ export class Shimmer3RClient {
       this._rxBuf=new Uint8Array(0);
       this.schema=null;
       this._streaming=false;
+      // Clear cached expansion power state because we're disconnected
+      this.ExpPower = 0;
       this._emitStatus('Disconnected');
     }
   }
@@ -215,9 +217,16 @@ export class Shimmer3RClient {
     this._emitStatus(
       `Expansion power ${expPower ? 'enabled' : 'disabled'} (ACK received).`
     );
+	this.ExpPower = expPower;
+    // Notify any UI or caller interested in changes
+    try { this.onExpPowerChanged?.(expPower); } catch (e) { this._log('onExpPowerChanged handler error', e); }
     return { expPower, ackRemainder };
   }
 
+  getInternalExpPower(){
+	return this.ExpPower;
+  }
+	
   getEnabledSensors() {
     return this.enabledSensors;
   }
@@ -388,17 +397,29 @@ export class Shimmer3RClient {
 
   // ---- Inquiry decode → schema ----
   // ✅ Best-practice version of `_interpretInquiryResponseShimmer3R()` and `_buildSchema()`
-  // This approach mirrors the C# `InterpretDataPacketFormat()` logic more closely.
-  // It returns a schema object that includes not only field info, but also enabledSensors and packetSize.
+// This approach mirrors the C# `InterpretDataPacketFormat()` logic more closely.
+// It returns a schema object that includes not only field info, but also enabledSensors and packetSize.
 
   _interpretInquiryResponseShimmer3R(u8) {
     let base = 0;
-    if (u8[0] === OPCODES.INQUIRY_RSP && u8.length >= 2) base = 1;
+    if (u8[0] === OPCODES.INQUIRY_RSP && u8.length >= 2) base = 1; //base is 1 because the first index is the response code
 
     const adcRaw = u16le(u8, base + 0);
     const samplingHz = 32768 / (adcRaw || 1);
+	
+	const cfg =
+      (BigInt(u8[base+2])       ) |
+      (BigInt(u8[base+3]) << 8n) |
+      (BigInt(u8[base+4]) << 16n) |
+      (BigInt(u8[base+5]) << 24n) |
+      (BigInt(u8[base+6]) << 32n) |
+      (BigInt(u8[base+7]) << 40n) |
+      (BigInt(u8[base+8]) << 48n);
 
-    const numCh = u8[base + 9] ?? 0;
+    const internalExpPower = Number((cfg >> 24n) & 0x1n);
+    this.ExpPower = internalExpPower;
+	
+	const numCh = u8[base + 9] ?? 0;
     const bufSize = u8[base + 10] ?? 0;
     const chStart = base + 11;
     const chEnd = chStart + numCh;
@@ -412,7 +433,9 @@ export class Shimmer3RClient {
     this._log(
       `Schema built: timestampFmt=${schema.timestampFmt}, fields=${schema.fields.length}, enabledSensors=0x${schema.enabledSensors.toString(16)}`
     );
-
+    this._emitStatus(
+      `Expansion power ${this.ExpPower ? 'enabled' : 'disabled'} (ACK received).`
+    );
     return {
       opcode: u8[0],
       adcRaw,

@@ -32,17 +32,39 @@
       document.getElementById('status').textContent = `Enabled sensors: 0x${enabled.toString(16).toUpperCase()}`;
     }
 
-    document.getElementById('applySensorsBtn').onclick = async () => {
+    // ---- Expansion power UI handling ----
+    const expChk = document.getElementById('expPowerChk');
+    expChk.disabled = true; // disabled until connected
+    expChk.onchange = async (e) => {
+      if (!shimmer || !shimmer.device) {
+        expChk.checked = false;
+        return alert('Connect to device first.');
+      }
+
+      const desired = expChk.checked ? 1 : 0;
+      // disable while toggling to avoid double requests
+      expChk.disabled = true;
       try {
-        const selectedOptions = [...sensorMenu.selectedOptions];
-        if (selectedOptions.length === 0) return alert('Select at least one sensor');
-        let bitmask = 0;
-        selectedOptions.forEach(opt => bitmask |= parseInt(opt.value));
-        const result = await shimmer.setSensors(bitmask);
-        await refreshEnabledSensors();
-        buildSignalList(shimmer.schema.fields);
-        document.getElementById('status').textContent = `Sensors applied (0x${bitmask.toString(16).toUpperCase()})`;
-      } catch (e) { alert(e); }
+        document.getElementById('status').textContent = `Setting expansion power to ${desired ? 'ON' : 'OFF'}…`;
+        await shimmer.setInternalExpPower(desired);
+        // setInternalExpPower updates shimmer.ExpPower and emits onExpPowerChanged
+        expChk.checked = (shimmer.getInternalExpPower() === 1);
+        document.getElementById('status').textContent = `Expansion power ${desired ? 'enabled' : 'disabled'}.`;
+      } catch (err) {
+        console.error('Failed to set expansion power', err);
+        alert('Failed to set expansion power: ' + err.message);
+        // revert visual state to cached value
+        expChk.checked = (shimmer.getInternalExpPower() === 1);
+        document.getElementById('status').textContent = 'Error setting expansion power.';
+      } finally {
+        expChk.disabled = false;
+      }
+    };
+
+    // Keep checkbox in sync if client emits changes (e.g., enableEMG16Bit triggers setInternalExpPower)
+    shimmer.onExpPowerChanged = (val) => {
+      expChk.checked = (val === 1);
+      expChk.disabled = false;
     };
 
     // -------- Buttons --------
@@ -53,12 +75,19 @@
         const info = await shimmer.inquiry();
         buildSignalList(info.schema.fields);
         await refreshEnabledSensors();
+
+        // After connect, reflect cached expansion power state in the checkbox
+        expChk.checked = (shimmer.getInternalExpPower() === 1);
+        expChk.disabled = false;
       } catch (e) { alert(e); }
     };
 
     document.getElementById('disconnectBtn').onclick = async () => {
       await shimmer.disconnect();
       document.getElementById('status').textContent = 'Disconnected.';
+      // disable expansion power checkbox while disconnected
+      expChk.checked = false;
+      expChk.disabled = true;
     };
 
     document.getElementById('startBtn').onclick = async () => {
@@ -170,6 +199,7 @@
     button { margin-right: 6px; }
     #signalList { margin-top: 8px; }
     #log { font-size: 0.9em; color: #555; margin-top: 6px; }
+    label.exp { margin-left: 12px; margin-right: 8px; }
   </style>
 </head>
 <body>
@@ -183,6 +213,9 @@
 
     <select id="sensorMenu" multiple size="5" style="margin-left:10px; min-width: 220px;"></select>
     <button id="applySensorsBtn">Apply Sensors</button>
+
+    <!-- Expansion power checkbox -->
+    <label class="exp"><input id="expPowerChk" type="checkbox"> Expansion Power</label>
   </div>
 
   <div id="status"></div>
