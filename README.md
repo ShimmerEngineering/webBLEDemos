@@ -14,6 +14,8 @@ If sufficient interest is registered, we may prioritize building a more fully sc
 
 [Two Gyro Example](https://shimmerengineering.github.io/webBLEDemos/brick/)
 
+[Wrist Sensor Example](https://shimmerengineering.github.io/webBLEDemos/Verisense/)
+
 # Requirements
 - Shimmer3R
 - FW Version >= v1.0.22
