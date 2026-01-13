@@ -100,6 +100,7 @@ export class Shimmer3RClient {
     // NEW: ACK expectation counter and streaming state
     this._expectingAck = 0;
     this._streaming = false;
+    this.samplingRateHz = 0;
   }
 
   _log(...a){ if(this.debug) console.log('[Shimmer3R]', ...a); }
@@ -303,10 +304,9 @@ export class Shimmer3RClient {
     const appliedHz = 32768 / divisor;
 
     // Update any cached sampling info from Inquiry (purely informational)
-    this.lastSamplingDivisor = divisor;
-    this.lastSamplingHz = appliedHz;
+    this.samplingRateHz = appliedHz;
 
-    this._emitStatus(`Sampling rate ACKed. Applied ≈ ${appliedHz.toFixed(3)} Hz`);
+    this._emitStatus(`Sampling rate ACKed. Applied ≈ ${samplingRateHz.toFixed(3)} Hz`);
     return { requestedHz: rateHz, appliedHz, divisor, ackRemainder };
   }
 
@@ -335,13 +335,13 @@ export class Shimmer3RClient {
   async enableEMG16Bit() {
     if (!this.rx) throw new Error('Not connected (RX missing)');
 
-    // 1) Ensure expansion power is ON (ACK-aware helper already exists)
-    await this.setInternalExpPower(1);
-
-    // 2) Program ADS1292R pages (EXG1 then EXG2)
+    // 1) Program ADS1292R pages (EXG1 then EXG2)
     //    These are the exact frames you provided.
-    const writeEXG1Command = new Uint8Array([0x61, 0x00, 0x00, 0x0A, 0x02, 0xA8, 0x10, 0x69, 0x60, 0x20, 0x00, 0x00, 0x02, 0x03]);
-    const writeEXG2Command = new Uint8Array([0x61, 0x01, 0x00, 0x0A, 0x02, 0xA0, 0x10, 0xE1, 0xE1, 0x00, 0x00, 0x00, 0x02, 0x01]);
+    let writeEXG1Command = new Uint8Array([0x61, 0x00, 0x00, 0x0A, 0x02, 0xA8, 0x10, 0x69, 0x60, 0x20, 0x00, 0x00, 0x02, 0x03]);
+    let writeEXG2Command = new Uint8Array([0x61, 0x01, 0x00, 0x0A, 0x02, 0xA0, 0x10, 0xE1, 0xE1, 0x00, 0x00, 0x00, 0x02, 0x01]);
+    const oversamplingRatio = getOversamplingRatioADS1292R(this.samplingRateHz)
+    writeEXG1Command[4] = (((writeEXG1Command[4] >> 3) << 3) | oversamplingRatio) & 0xFF;//index 4 is where the 1st byte of the exg array
+    writeEXG2Command[4] = (((writeEXG2Command[4] >> 3) << 3) | oversamplingRatio) & 0xFF;//index 4 is where the 1st byte of the exg array   
 
     // Many firmwares ACK 0x61, but since that can vary, we do a plain write + short sleep.
     await this._write(writeEXG1Command);
@@ -359,6 +359,77 @@ export class Shimmer3RClient {
 
     this._emitStatus('EMG 16-bit enabled on EXG1 & EXG2. Schema updated.');
   }
+  
+    /**
+   * Enable EMG (ADS1292R) in 16-bit mode on EXG1 & EXG2.
+   * - Powers the internal expansion rail
+   * - Writes the provided EXG1/EXG2 config pages
+   * - Enables SENSOR_EXG1_16BIT and SENSOR_EXG2_16BIT via setSensors()
+   * - Refreshes schema via inquiry()
+   */
+  async enableEXGTestSignal16Bit() {
+    if (!this.rx) throw new Error('Not connected (RX missing)');
+
+    // 1) Ensure expansion power is ON (ACK-aware helper already exists)
+    await this.setInternalExpPower(1);
+
+    // 2) Program ADS1292R pages (EXG1 then EXG2)
+    //    These are the exact frames you provided.
+    let writeEXG1Command = new Uint8Array([0x61, 0x00, 0x00, 0x0A, 0x02, 0xAB, 0x10, 0x15, 0x15, 0x00, 0x00, 0x00, 0x02, 0x01]);
+    let writeEXG2Command = new Uint8Array([0x61, 0x01, 0x00, 0x0A, 0x02, 0xA3, 0x10, 0x15, 0x15, 0x00, 0x00, 0x00, 0x02, 0x01]);
+    const oversamplingRatio = getOversamplingRatioADS1292R(this.samplingRateHz)
+    writeEXG1Command[4] = (((writeEXG1Command[4] >> 3) << 3) | oversamplingRatio) & 0xFF;//index 4 is where the 1st byte of the exg array
+    writeEXG2Command[4] = (((writeEXG2Command[4] >> 3) << 3) | oversamplingRatio) & 0xFF;//index 4 is where the 1st byte of the exg array    
+
+
+    // Many firmwares ACK 0x61, but since that can vary, we do a plain write + short sleep.
+    await this._write(writeEXG1Command);
+    await new Promise(r => setTimeout(r, 200));
+    await this._write(writeEXG2Command);
+    await new Promise(r => setTimeout(r, 50));
+
+    // 3) Enable EXG1/EXG2 (16-bit) sensors in the 24-bit bitmap and apply
+    const targetBits =
+      (SensorBitmapShimmer3.SENSOR_EXG1_16BIT |
+       SensorBitmapShimmer3.SENSOR_EXG2_16BIT) >>> 0;
+
+    const newMask = ((this.enabledSensors >>> 0) | targetBits) & 0xFFFFFF;
+    await this.setSensors(newMask);   // this already does an inquiry() to rebuild schema
+
+    this._emitStatus('EMG 16-bit enabled on EXG1 & EXG2. Schema updated.');
+  }
+  
+    async enableECG16Bit() {
+        if (!this.rx) throw new Error('Not connected (RX missing)');
+
+        // 1) Ensure expansion power is ON (ACK-aware helper already exists)
+        await this.setInternalExpPower(1);
+
+        // 2) Program ADS1292R pages (EXG1 then EXG2)
+        //    These are the exact frames you provided.
+        let writeEXG1Command = new Uint8Array([0x61, 0x00, 0x00, 0x0A, 0x02, 0xA8, 0x10, 0x40, 0x40, 0x2D, 0x00, 0x00, 0x02, 0x03]);
+        let writeEXG2Command = new Uint8Array([0x61, 0x01, 0x00, 0x0A, 0x02, 0xA0, 0x10, 0x40, 0x47, 0x00, 0x00, 0x00, 0x02, 0x01]);
+        const oversamplingRatio = getOversamplingRatioADS1292R(this.samplingRateHz)
+        writeEXG1Command[4] = (((writeEXG1Command[4] >> 3) << 3) | oversamplingRatio) & 0xFF;//index 4 is where the 1st byte of the exg array
+        writeEXG2Command[4] = (((writeEXG2Command[4] >> 3) << 3) | oversamplingRatio) & 0xFF;//index 4 is where the 1st byte of the exg array    
+
+
+        // Many firmwares ACK 0x61, but since that can vary, we do a plain write + short sleep.
+        await this._write(writeEXG1Command);
+        await new Promise(r => setTimeout(r, 200));
+        await this._write(writeEXG2Command);
+        await new Promise(r => setTimeout(r, 50));
+
+        // 3) Enable EXG1/EXG2 (16-bit) sensors in the 24-bit bitmap and apply
+        const targetBits =
+            (SensorBitmapShimmer3.SENSOR_EXG1_16BIT |
+                SensorBitmapShimmer3.SENSOR_EXG2_16BIT) >>> 0;
+
+        const newMask = ((this.enabledSensors >>> 0) | targetBits) & 0xFFFFFF;
+        await this.setSensors(newMask);   // this already does an inquiry() to rebuild schema
+
+        this._emitStatus('EMG 16-bit enabled on EXG1 & EXG2. Schema updated.');
+    }
   
   async startStreaming(){
     if (!this.schema) this._emitStatus('Starting stream without schema (not recommended).');
@@ -404,8 +475,11 @@ export class Shimmer3RClient {
     let base = 0;
     if (u8[0] === OPCODES.INQUIRY_RSP && u8.length >= 2) base = 1; //base is 1 because the first index is the response code
 
-    const adcRaw = u16le(u8, base + 0);
-    const samplingHz = 32768 / (adcRaw || 1);
+      const adcRaw = u16le(u8, base + 0);
+      this._log("adc raw: " + adcRaw);
+      const samplingRateHz = 32768 / adcRaw;
+      this.samplingRateHz = samplingRateHz;
+      this._log("sampling rate: " + this.samplingRateHz);
 	
 	const cfg =
       (BigInt(u8[base+2])       ) |
@@ -439,7 +513,7 @@ export class Shimmer3RClient {
     return {
       opcode: u8[0],
       adcRaw,
-      samplingHz,
+      samplingRateHz,
       numChannels: numCh,
       bufferSize: bufSize,
       channelIds,
@@ -706,3 +780,22 @@ function u24be(b,o){ return (b[o]<<16) | (b[o+1]<<8) | b[o+2]; }
 function sign16(v){ return (v & 0x8000) ? (v | 0xFFFF0000) : v; }
 function sign24(v){ return (v & 0x800000) ? (v | 0xFF000000) : v; }
 function hex2(v){ return v.toString(16).padStart(2,'0').toUpperCase(); }
+function getOversamplingRatioADS1292R(samplingRate) {
+  if (!Number.isFinite(samplingRate)) {
+    throw new TypeError('samplingRate must be a finite number');
+  }
+  if (samplingRate < 0) {
+    throw new RangeError('samplingRate must be non-negative');
+  }
+
+  let oversamplingRatio = 6; // >=4000
+
+  if (samplingRate < 125)        oversamplingRatio = 0;
+  else if (samplingRate < 250)   oversamplingRatio = 1;
+  else if (samplingRate < 500)   oversamplingRatio = 2;
+  else if (samplingRate < 1000)  oversamplingRatio = 3;
+  else if (samplingRate < 2000)  oversamplingRatio = 4;
+  else if (samplingRate < 4000)  oversamplingRatio = 5;
+
+  return oversamplingRatio;
+}

@@ -14,6 +14,17 @@
     let sampleCounter = 0;
     const ctx = document.getElementById('chart').getContext('2d');
 
+    const exgTestBtn = document.getElementById('exgTestBtn');
+    const emg16Btn = document.getElementById('emg16Btn');
+    const ecg16Btn = document.getElementById('ecg16Btn');
+
+    // keep a small helper to enable/disable as a group
+    function setEXGButtonsEnabled(enabled) {
+        [exgTestBtn, emg16Btn, ecg16Btn].forEach(b => b.disabled = !enabled);
+    }
+    // disabled until connected
+    setEXGButtonsEnabled(false);
+
     // Build Sensor Dropdown Menu
     const sensorMenu = document.getElementById('sensorMenu');
     for (const [key, value] of Object.entries(SensorBitmapShimmer3)) {
@@ -31,6 +42,51 @@
       }
       document.getElementById('status').textContent = `Enabled sensors: 0x${enabled.toString(16).toUpperCase()}`;
     }
+
+    exgTestBtn.onclick = async () => {
+        if (!shimmer.device) return alert('Connect first.');
+        try {
+            setEXGButtonsEnabled(false);
+            document.getElementById('status').textContent = 'Enabling EXG test signal (16‑bit)…';
+            await shimmer.enableEXGTestSignal16Bit(); // will power expansion, program EXG pages, set sensors, and re-inquiry
+            document.getElementById('status').textContent = 'EXG test signal enabled.';
+        } catch (e) {
+            console.error(e);
+            alert('Failed to enable EXG test signal: ' + e.message);
+        } finally {
+            setEXGButtonsEnabled(true);
+        }
+    };
+
+    emg16Btn.onclick = async () => {
+        if (!shimmer.device) return alert('Connect first.');
+        try {
+            setEXGButtonsEnabled(false);
+            document.getElementById('status').textContent = 'Enabling EMG (16‑bit) on EXG1 & EXG2…';
+            await shimmer.enableEMG16Bit();          // programs EXG pages, sets EXG1/2 16‑bit sensors, triggers inquiry
+            document.getElementById('status').textContent = 'EMG 16‑bit enabled.';
+        } catch (e) {
+            console.error(e);
+            alert('Failed to enable EMG 16‑bit: ' + e.message);
+        } finally {
+            setEXGButtonsEnabled(true);
+        }
+    };
+
+    ecg16Btn.onclick = async () => {
+        if (!shimmer.device) return alert('Connect first.');
+        try {
+            setEXGButtonsEnabled(false);
+            document.getElementById('status').textContent = 'Enabling ECG (16‑bit) on EXG1 & EXG2…';
+            await shimmer.enableECG16Bit();           // powers expansion, programs EXG pages, sets sensors, triggers inquiry
+            document.getElementById('status').textContent = 'ECG 16‑bit enabled.';
+        } catch (e) {
+            console.error(e);
+            alert('Failed to enable ECG 16‑bit: ' + e.message);
+        } finally {
+            setEXGButtonsEnabled(true);
+        }
+    };
 
     // ---- Expansion power UI handling ----
     const expChk = document.getElementById('expPowerChk');
@@ -79,6 +135,7 @@
         // After connect, reflect cached expansion power state in the checkbox
         expChk.checked = (shimmer.getInternalExpPower() === 1);
         expChk.disabled = false;
+        setEXGButtonsEnabled(true);
       } catch (e) { alert(e); }
     };
 
@@ -88,6 +145,7 @@
       // disable expansion power checkbox while disconnected
       expChk.checked = false;
       expChk.disabled = true;
+      setEXGButtonsEnabled(false);
     };
 
     document.getElementById('startBtn').onclick = async () => {
@@ -205,17 +263,21 @@
 <body>
   <h2>Shimmer3R Web Bluetooth Viewer</h2>
   <div id="toolbar">
-    <button id="connectBtn">Connect</button>
-    <button id="startBtn">Start Stream</button>
-    <button id="stopBtn">Stop</button>
-    <button id="disconnectBtn">Disconnect</button>
-    <button id="saveBtn">Start Saving</button>
+      <button id="connectBtn">Connect</button>
+      <button id="startBtn">Start Stream</button>
+      <button id="stopBtn">Stop</button>
+      <button id="disconnectBtn">Disconnect</button>
+      <button id="saveBtn">Start Saving</button>
 
-    <select id="sensorMenu" multiple size="5" style="margin-left:10px; min-width: 220px;"></select>
-    <button id="applySensorsBtn">Apply Sensors</button>
+      <select id="sensorMenu" multiple size="5" style="margin-left:10px; min-width: 220px;"></select>
+      <button id="applySensorsBtn">Apply Sensors</button>
 
-    <!-- Expansion power checkbox -->
-    <label class="exp"><input id="expPowerChk" type="checkbox"> Expansion Power</label>
+      <button id="exgTestBtn" disabled>EXG Test (16‑bit)</button>
+      <button id="emg16Btn" disabled>Enable EMG 16‑bit</button>
+      <button id="ecg16Btn" disabled>Enable ECG 16‑bit</button>
+
+      <!-- Expansion power checkbox -->
+      <label class="exp"><input id="expPowerChk" type="checkbox"> Expansion Power</label>
   </div>
 
   <div id="status"></div>
