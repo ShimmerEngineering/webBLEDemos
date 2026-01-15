@@ -49,6 +49,7 @@
             setEXGButtonsEnabled(false);
             document.getElementById('status').textContent = 'Enabling EXG test signal (16‑bit)…';
             await shimmer.enableEXGTestSignal16Bit(); // will power expansion, program EXG pages, set sensors, and re-inquiry
+            buildSignalList(shimmer.schema.fields);
             document.getElementById('status').textContent = 'EXG test signal enabled.';
         } catch (e) {
             console.error(e);
@@ -64,6 +65,7 @@
             setEXGButtonsEnabled(false);
             document.getElementById('status').textContent = 'Enabling EMG (16‑bit) on EXG1 & EXG2…';
             await shimmer.enableEMG16Bit();          // programs EXG pages, sets EXG1/2 16‑bit sensors, triggers inquiry
+            buildSignalList(shimmer.schema.fields);
             document.getElementById('status').textContent = 'EMG 16‑bit enabled.';
         } catch (e) {
             console.error(e);
@@ -79,6 +81,7 @@
             setEXGButtonsEnabled(false);
             document.getElementById('status').textContent = 'Enabling ECG (16‑bit) on EXG1 & EXG2…';
             await shimmer.enableECG16Bit();           // powers expansion, programs EXG pages, sets sensors, triggers inquiry
+            buildSignalList(shimmer.schema.fields);
             document.getElementById('status').textContent = 'ECG 16‑bit enabled.';
         } catch (e) {
             console.error(e);
@@ -124,6 +127,19 @@
     };
 
     // -------- Buttons --------
+    document.getElementById('applySensorsBtn').onclick = async () => {
+      try {
+        const selectedOptions = [...sensorMenu.selectedOptions];
+        if (selectedOptions.length === 0) return alert('Select at least one sensor');
+        let bitmask = 0;
+        selectedOptions.forEach(opt => bitmask |= parseInt(opt.value));
+        const result = await shimmer.setSensors(bitmask);
+        await refreshEnabledSensors();
+        buildSignalList(shimmer.schema.fields);
+        document.getElementById('status').textContent = `Sensors applied (0x${bitmask.toString(16).toUpperCase()})`;
+      } catch (e) { alert(e); }
+    };
+
     document.getElementById('connectBtn').onclick = async () => {
       try {
         await shimmer.connect();
