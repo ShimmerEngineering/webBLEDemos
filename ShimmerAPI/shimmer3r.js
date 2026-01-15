@@ -15,7 +15,7 @@ const TIMESTAMP_FIELD = {
   u16: { name: 'TIMESTAMP', fmt: 'u16', endian: 'le', sizeBytes: 2 },
   u24: { name: 'TIMESTAMP', fmt: 'u24', endian: 'le', sizeBytes: 3 },
 };
-
+const GSR_NAME = 'GSR';
 // --- Sensor bitmap definitions (Shimmer3) ---
 export const SensorBitmapShimmer3 = {
   SENSOR_A_ACCEL:        0x000080,
@@ -45,10 +45,31 @@ export const SensorBitmapShimmer3 = {
 
 // Minimal ObjectCluster analogue
 export class ObjectCluster {
-  constructor(deviceId){ this.deviceId=deviceId; this.fields=[]; this.raw=null; }
-  add(n,v,u=null){ this.fields.push({name:n,value:v,unit:u}); }
-  get(n){ return this.fields.find(f=>f.name===n)||null; }
+  constructor(deviceId){ 
+    this.deviceId = deviceId; 
+    this.fields   = []; 
+    this.raw      = null; 
+  }
+
+  /**
+   * Add a field as a separate series.
+   * @param {string} name   e.g. 'GYRO_X' or 'GYRO_X_RAW'
+   * @param {number} value
+   * @param {string|null} unit  e.g. 'deg/s', 'g', 'µS', 'counts', 'raw'
+   * @param {'raw'|'cal'|null} kind  tag of the series
+   */
+  add(name, value, unit=null, kind=null){ 
+    this.fields.push({ name, value, unit, kind }); 
+  }
+
+  /**
+   * Get by name, optionally by kind (when there are both RAW and CAL with same name).
+   */
+  get(name, kind=null){ 
+    return this.fields.find(f => f.name === name && (kind === null || f.kind === kind)) || null; 
+  }
 }
+
 
 // Example subset (extend as needed)
 const CHANNEL_FORMATS = {
@@ -74,7 +95,8 @@ const CHANNEL_FORMATS = {
   0x24: { name: 'Exg1_CH2_16Bit', fmt: 'i16', endian: 'be', sizeBytes: 2 },
   0x25: { name: 'Exg2_CH1_16Bit', fmt: 'i16', endian: 'be', sizeBytes: 2 },
   0x26: { name: 'Exg2_CH2_16Bit', fmt: 'i16', endian: 'be', sizeBytes: 2 },
-  0x12: { name: 'PPG', fmt: 'i16', endian: 'le', sizeBytes: 2 }
+  0x12: { name: 'PPG', fmt: 'i16', endian: 'le', sizeBytes: 2 },
+  0x1C: { name: GSR_NAME, fmt: 'i16', endian: 'le', sizeBytes: 2 }
 };
 
 export class Shimmer3RClient {
@@ -101,6 +123,8 @@ export class Shimmer3RClient {
     this._expectingAck = 0;
     this._streaming = false;
     this.samplingRateHz = 0;
+	this.LIMIT_MIN_VALID_USIEMENS = 0.03;
+    this.gsrRangeSetting = 0;
   }
 
   _log(...a){ if(this.debug) console.log('[Shimmer3R]', ...a); }
@@ -491,8 +515,9 @@ export class Shimmer3RClient {
       (BigInt(u8[base+8]) << 48n);
 
     const internalExpPower = Number((cfg >> 24n) & 0x1n);
+	const gsrRange = Number((cfg >> 25n) & 0x7n);
     this.ExpPower = internalExpPower;
-	
+	this.gsrRangeSetting = gsrRange;
 	const numCh = u8[base + 9] ?? 0;
     const bufSize = u8[base + 10] ?? 0;
     const chStart = base + 11;
@@ -581,6 +606,25 @@ export class Shimmer3RClient {
     };
   }
 
+  _calibrateData(oc){
+    const snapshot = [...oc.fields]; // copy so pushes won't affect iteration
+	for (const field of snapshot) {
+		if (field.name === GSR_NAME){
+			const field = oc.get(GSR_NAME, 'raw');
+			const gsrraw = field?.value ?? null;
+			console.log(gsrraw);
+			let adc12 = (gsrraw & 0x0FFF);
+			let currentRange = this.gsrRangeSetting;
+			if (currentRange === 4) {
+			  currentRange = (gsrraw >> 14) & 0x03; // auto-range bits
+			}
+			
+			let gsr = calibrateGsrDataToResistanceFromAmplifierEq(adc12, currentRange);
+			oc.add(GSR_NAME,gsr, 'kOhm','cal');	
+		}
+	}
+  }	  
+
   _parseBySchema() {
     const sch = this.schema;
     if (!sch) { this._log('parse: no schema set; skipping'); return; }
@@ -632,7 +676,7 @@ export class Shimmer3RClient {
           let ts;
           if (tsBytes === 2) { ts = u16le(frame, cursor); cursor += 2; }
           else { ts = u24le(frame, cursor); cursor += 3; }
-          oc.add('TIMESTAMP', ts);
+          oc.add('TIMESTAMP', ts, 'ticks', 'raw');
 
           // Fields
           for (const f of sch.fields) {
@@ -657,7 +701,7 @@ export class Shimmer3RClient {
               default:    v = u16le(frame, cursor); // fallback
             }
             cursor += f.sizeBytes;
-            oc.add(f.name, v);
+            oc.add(f.name, v, null,'raw');
           }
 
           // Optional: anomaly log against lastTs (purely diagnostic)
@@ -669,8 +713,10 @@ export class Shimmer3RClient {
             }
           }
           this._lastTs = ts;
-
-          // Emit and consume one frame
+			
+		  this._calibrateData(oc); 	
+          
+		  // Emit and consume one frame
           this.onStreamFrame?.(oc);
           frames++;
           buf = buf.subarray(frameBytes);
@@ -770,6 +816,30 @@ export class Shimmer3RClient {
   offTemp(fn){ this._temps.delete(fn); }
   _emitTemp(buf){ this._temps.forEach(fn=>{ try{ fn(buf);}catch(e){ this._log('temp handler error', e);} }); }
 }
+
+function calibrateGsrDataToResistanceFromAmplifierEq(gsrUncalibratedData, range) {
+  const SHIMMER3_REF_KOHMS = [40.2, 287.0, 1000.0, 3300.0];
+  const rFeedback = SHIMMER3_REF_KOHMS[range];
+  let volts = 0;
+  volts = calibrateShimmer3RAdcChannel(gsrUncalibratedData) / 1000.0; // convert mV → V
+  // Amplifier equation: Rsource = Rfeedback / ((Vout / 0.5) - 1)
+  const rSource = rFeedback / ((volts / 0.5) - 1.0);
+  return rSource; // in kΩ
+}
+
+function calibrateShimmer3RAdcChannel(unCalData) {
+  const offset = 0;
+  const vRefP = 3; // reference voltage in volts
+  const gain = 1;
+  return calibrateU12AdcValue(unCalData, offset, vRefP, gain);
+}
+
+function calibrateU12AdcValue(uncalibratedData, offset, vRefP, gain) {
+  // Formula: (uncalibrated - offset) * ((vRefP * 1000 / gain) / 4095)
+  const calibratedData = (uncalibratedData - offset) * (((vRefP * 1000) / gain) / 4095);
+  return calibratedData;
+}
+
 
 // ---- Byte helpers ----
 function concatU8(a,b){ const o=new Uint8Array(a.length+b.length); o.set(a); o.set(b,a.length); return o; }

@@ -163,13 +163,14 @@
       expChk.disabled = true;
       setEXGButtonsEnabled(false);
     };
-
+	let signalListInitialized = false;
     document.getElementById('startBtn').onclick = async () => {
       if (!shimmer.device) return alert('Connect first.');
       isStreaming = true;
       fileBuffer = [];
       headerRow = [];
       sampleCounter = 0;
+	  signalListInitialized = false;
       await shimmer.startStreaming();
       shimmer.onStreamFrame = onFrame;
       document.getElementById('status').textContent = 'Streaming…';
@@ -202,66 +203,153 @@
     };
 
     // -------- Build signal list --------
-    function buildSignalList(fields) {
-      const listDiv = document.getElementById('signalList');
-      listDiv.innerHTML = '';
-      fields.forEach(f => {
-        if (f.name === 'TIMESTAMP') return;
-        const label = document.createElement('label');
-        const cb = document.createElement('input');
-        cb.type = 'checkbox'; cb.value = f.name;
-        cb.onchange = rebuildChart;
-        label.append(cb, f.name);
-        listDiv.append(label, document.createElement('br'));
-      });
+    
+// -------- Build signal list (name + kind) --------
+
+
+function buildSignalList(fields) {
+  const listDiv = document.getElementById('signalList');
+  const signalNote = document.getElementById('signalNote');
+  listDiv.innerHTML = '';
+
+  // Collect unique (name, kind) pairs; ignore TIMESTAMP
+  const pairs = [];
+  const seen = new Set(); // key = `${name}||${kind??''}`
+
+  for (const f of fields || []) {
+    if (f.name === 'TIMESTAMP') continue;
+    const kind = f.kind ?? null;
+    const key = `${f.name}||${kind ?? ''}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      pairs.push({ name: f.name, kind });
     }
+  }
 
-    function rebuildChart() {
-      const selected = [...document.querySelectorAll('#signalList input:checked')].map(cb => cb.value);
-      chartData = {};
-      const datasets = selected.map(name => {
-        chartData[name] = [];
-        return {
-          label: name,
-          data: [],
-          borderWidth: 1,
-          fill: false
-        };
-      });
-      if (chart) chart.destroy();
-      chart = new Chart(ctx, {
-        type: 'line',
-        data: { datasets },
-        options: {
-          animation: false,
-          scales: {
-            x: { type: 'linear', title: { text: 'Sample Index', display: true } },
-            y: { title: { text: 'Value', display: true } }
-          }
-        }
-      });
+  // Create checkboxes labeled "NAME_KIND" (KIND uppercased; omit suffix if kind is null)
+  pairs.forEach(({ name, kind }) => {
+    const label = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
 
-      headerRow = ['SampleIndex', ...selected];
-    }
+    // Store both name and kind in the value
+    cb.value = JSON.stringify({ name, kind });
+    cb.onchange = rebuildChart;
 
-    function onFrame(oc) {
-      if (!isStreaming || !chart) return;
-      sampleCounter++;
-      const row = [sampleCounter];
-      for (const name in chartData) {
-        const val = oc.get(name)?.value ?? null;
-        chartData[name].push({ x: sampleCounter, y: val });
-        row.push(val);
+    const suffix = kind ? `_${String(kind).toUpperCase()}` : '';
+    label.append(cb, `${name}${suffix}`);
+    listDiv.append(label, document.createElement('br'));
+  });
+
+  // Optional note
+  if (signalNote) {
+    signalNote.textContent = pairs.length
+      ? 'Tip: Select RAW or CAL variants (e.g., GSR_RAW and GSR_CAL) to compare.'
+      : 'No signals available yet.';
+  }
+}
+
+// Stable hash from a string
+function hashString(s) {
+  let h = 2166136261; // FNV-1a seed
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0); // uint32
+}
+
+// Map hash -> pretty HSL color
+function colorFromLabel(label, alpha = 1) {
+  const h = hashString(label) % 360; // hue 0–359
+  const s = 68;                      // saturation %
+  const l = 52;                      // lightness %
+  return {
+    border: `hsl(${h} ${s}% ${l}%)`,
+    fill: `hsla(${h} ${s}% ${l}% / ${alpha})`
+  };
+}
+
+
+function rebuildChart() {
+  const selected = [...document.querySelectorAll('#signalList input:checked')]
+    .map(cb => JSON.parse(cb.value));
+
+  chartData = {};
+
+  const toLabel = ({name, kind}) =>
+    kind ? `${name}_${String(kind).toUpperCase()}` : name;
+
+  const datasets = selected.map(sel => {
+    const label = toLabel(sel);
+    chartData[label] = [];
+    const { border, fill } = colorFromLabel(label, 0.15);
+    return {
+      label,
+      _metaSel: sel,
+      data: [],
+      borderColor: border,
+      backgroundColor: fill,
+      borderWidth: 1,
+      pointRadius: 0,
+      fill: false
+    };
+  });
+
+  if (chart) chart.destroy();
+  chart = new Chart(ctx, {
+    type: 'line',
+    data: { datasets },
+    options: {
+      animation: false,
+      parsing: false,
+      scales: {
+        x: { type: 'linear', title: { text: 'Sample Index', display: true } },
+        y: { title: { text: 'Value', display: true } }
       }
-      if (isSaving) fileBuffer.push(row.join(','));
-      for (const name in chartData) {
-        const arr = chartData[name];
-        if (arr.length > 200) arr.splice(0, arr.length - 200);
-        const ds = chart.data.datasets.find(d => d.label === name);
-        if (ds) ds.data = arr;
-      }
-      chart.update();
     }
+  });
+
+  headerRow = ['SampleIndex', ...datasets.map(d => d.label)];
+}
+
+
+    
+function onFrame(oc) {
+
+  if (!signalListInitialized) {
+    buildSignalList(oc.fields);  // now pairs include RAW/CAL
+    signalListInitialized = true;
+  }
+
+  
+if (!isStreaming || !chart) return;
+  sampleCounter++;
+  const row = [sampleCounter];
+
+  for (const ds of chart.data.datasets) {
+    const { name, kind } = ds._metaSel || {};
+    const field = oc.get(name, kind ?? null);
+    const val = field?.value ?? null;
+
+    const label = ds.label; // "NAME_KIND"
+    chartData[label].push({ x: sampleCounter, y: val });
+    row.push(val);
+  }
+
+  if (isSaving) fileBuffer.push(row.join(','));
+
+  for (const ds of chart.data.datasets) {
+    const label = ds.label;
+    const arr = chartData[label];
+    if (arr.length > 200) arr.splice(0, arr.length - 200);
+    ds.data = arr;
+  }
+  chart.update();
+
+}
+
+
 
     shimmer.onStatus = (msg) => document.getElementById('log').textContent = msg;
   </script>
@@ -298,6 +386,7 @@
 
   <div id="status"></div>
   <div id="signalList"></div>
+  <small id="signalNote" style="color:#666"></small>
   <canvas id="chart"></canvas>
   <div id="log"></div>
 </body>
