@@ -619,7 +619,7 @@ export class Shimmer3RClient {
 		if (field.name === GSR_NAME){
 			const field = oc.get(GSR_NAME, 'raw');
 			const gsrraw = field?.value ?? null;
-			console.log(gsrraw);
+			//console.log(gsrraw);
 			let adc12 = (gsrraw & 0x0FFF);
 			let currentRange = this.gsrRangeSetting;
 			if (currentRange === 4) {
@@ -631,9 +631,9 @@ export class Shimmer3RClient {
                 }
             }
             let gsrkOhm = calibrateGsrDataToResistanceFromAmplifierEq(adc12, currentRange);
-            gsrkOhm = nudgeGsrResistance(gsrkOhm, currentRange);
+            gsrkOhm = nudgeGsrResistance(gsrkOhm, this.gsrRangeSetting);
             let gsrConductanceUSiemens = (1.0 / gsrkOhm) * 1000;
-            console.log('uSiemens: ' + gsrConductanceUSiemens);
+            //console.log('uSiemens: ' + gsrConductanceUSiemens + ' ' + this.gsrRangeSetting + ' ' + currentRange);
             oc.add(GSR_NAME, gsrConductanceUSiemens, 'uSiemens', 'cal');	
             //oc.add(GSR_NAME, gsr, 'kOhm', 'cal');	
 
