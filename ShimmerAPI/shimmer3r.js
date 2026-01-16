@@ -17,7 +17,8 @@ const TIMESTAMP_FIELD = {
 };
 const GSR_NAME = 'GSR';
 const GSR_UNCAL_LIMIT_RANGE3 = 683;
-
+const RAW = 'raw';
+const CAL = 'cal';
 
 const SHIMMER3_GSR_RESISTANCE_MIN_MAX_KOHMS = [
     [8.0, 63.0],     // Range 0
@@ -617,7 +618,7 @@ export class Shimmer3RClient {
     const snapshot = [...oc.fields]; // copy so pushes won't affect iteration
 	for (const field of snapshot) {
 		if (field.name === GSR_NAME){
-			const field = oc.get(GSR_NAME, 'raw');
+			const field = oc.get(GSR_NAME, RAW);
 			const gsrraw = field?.value ?? null;
 			//console.log(gsrraw);
 			let adc12 = (gsrraw & 0x0FFF);
@@ -634,8 +635,8 @@ export class Shimmer3RClient {
             gsrkOhm = nudgeGsrResistance(gsrkOhm, this.gsrRangeSetting);
             let gsrConductanceUSiemens = (1.0 / gsrkOhm) * 1000;
             //console.log('uSiemens: ' + gsrConductanceUSiemens + ' ' + this.gsrRangeSetting + ' ' + currentRange);
-            oc.add(GSR_NAME, gsrConductanceUSiemens, 'uSiemens', 'cal');	
-            //oc.add(GSR_NAME, gsr, 'kOhm', 'cal');	
+            oc.add(GSR_NAME, gsrConductanceUSiemens, 'uSiemens', CAL);	
+            //oc.add(GSR_NAME, gsr, 'kOhm', CAL);	
 
 		}
 	}
@@ -692,7 +693,7 @@ export class Shimmer3RClient {
           let ts;
           if (tsBytes === 2) { ts = u16le(frame, cursor); cursor += 2; }
           else { ts = u24le(frame, cursor); cursor += 3; }
-          oc.add('TIMESTAMP', ts, 'ticks', 'raw');
+          oc.add('TIMESTAMP', ts, 'ticks', RAW);
 
           // Fields
           for (const f of sch.fields) {
@@ -717,7 +718,7 @@ export class Shimmer3RClient {
               default:    v = u16le(frame, cursor); // fallback
             }
             cursor += f.sizeBytes;
-            oc.add(f.name, v, null,'raw');
+            oc.add(f.name, v, null,RAW);
           }
 
           // Optional: anomaly log against lastTs (purely diagnostic)
