@@ -49,7 +49,6 @@
             setEXGButtonsEnabled(false);
             document.getElementById('status').textContent = 'Enabling EXG test signal (16‑bit)…';
             await shimmer.enableEXGTestSignal16Bit(); // will power expansion, program EXG pages, set sensors, and re-inquiry
-            buildSignalList(shimmer.schema.fields);
             document.getElementById('status').textContent = 'EXG test signal enabled.';
         } catch (e) {
             console.error(e);
@@ -65,7 +64,6 @@
             setEXGButtonsEnabled(false);
             document.getElementById('status').textContent = 'Enabling EMG (16‑bit) on EXG1 & EXG2…';
             await shimmer.enableEMG16Bit();          // programs EXG pages, sets EXG1/2 16‑bit sensors, triggers inquiry
-            buildSignalList(shimmer.schema.fields);
             document.getElementById('status').textContent = 'EMG 16‑bit enabled.';
         } catch (e) {
             console.error(e);
@@ -81,7 +79,6 @@
             setEXGButtonsEnabled(false);
             document.getElementById('status').textContent = 'Enabling ECG (16‑bit) on EXG1 & EXG2…';
             await shimmer.enableECG16Bit();           // powers expansion, programs EXG pages, sets sensors, triggers inquiry
-            buildSignalList(shimmer.schema.fields);
             document.getElementById('status').textContent = 'ECG 16‑bit enabled.';
         } catch (e) {
             console.error(e);
@@ -135,7 +132,6 @@
         selectedOptions.forEach(opt => bitmask |= parseInt(opt.value));
         const result = await shimmer.setSensors(bitmask);
         await refreshEnabledSensors();
-        buildSignalList(shimmer.schema.fields);
         document.getElementById('status').textContent = `Sensors applied (0x${bitmask.toString(16).toUpperCase()})`;
       } catch (e) { alert(e); }
     };
@@ -145,7 +141,6 @@
         await shimmer.connect();
         document.getElementById('status').textContent = 'Connected. Running Inquiry...';
         const info = await shimmer.inquiry();
-        buildSignalList(info.schema.fields);
         await refreshEnabledSensors();
 
         // After connect, reflect cached expansion power state in the checkbox
@@ -241,12 +236,6 @@ function buildSignalList(fields) {
     listDiv.append(label, document.createElement('br'));
   });
 
-  // Optional note
-  if (signalNote) {
-    signalNote.textContent = pairs.length
-      ? 'Tip: Select RAW or CAL variants (e.g., GSR_RAW and GSR_CAL) to compare.'
-      : 'No signals available yet.';
-  }
 }
 
 // Stable hash from a string

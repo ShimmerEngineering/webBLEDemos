@@ -16,6 +16,17 @@ const TIMESTAMP_FIELD = {
   u24: { name: 'TIMESTAMP', fmt: 'u24', endian: 'le', sizeBytes: 3 },
 };
 const GSR_NAME = 'GSR';
+const GSR_UNCAL_LIMIT_RANGE3 = 683;
+
+
+const SHIMMER3_GSR_RESISTANCE_MIN_MAX_KOHMS = [
+    [8.0, 63.0],     // Range 0
+    [63.0, 220.0],   // Range 1
+    [220.0, 680.0],  // Range 2
+    [680.0, 4700.0]  // Range 3
+];
+
+
 // --- Sensor bitmap definitions (Shimmer3) ---
 export const SensorBitmapShimmer3 = {
   SENSOR_A_ACCEL:        0x000080,
@@ -96,7 +107,7 @@ const CHANNEL_FORMATS = {
   0x25: { name: 'Exg2_CH1_16Bit', fmt: 'i16', endian: 'be', sizeBytes: 2 },
   0x26: { name: 'Exg2_CH2_16Bit', fmt: 'i16', endian: 'be', sizeBytes: 2 },
   0x12: { name: 'PPG', fmt: 'i16', endian: 'le', sizeBytes: 2 },
-  0x1C: { name: GSR_NAME, fmt: 'i16', endian: 'le', sizeBytes: 2 }
+  0x1C: { name: GSR_NAME, fmt: 'u16', endian: 'le', sizeBytes: 2 }
 };
 
 export class Shimmer3RClient {
@@ -373,7 +384,7 @@ export class Shimmer3RClient {
     await this._write(writeEXG2Command);
     await new Promise(r => setTimeout(r, 50));
 
-    // 3) Enable EXG1/EXG2 (16-bit) sensors in the 24-bit bitmap and apply
+    // 2) Enable EXG1/EXG2 (16-bit) sensors in the 24-bit bitmap and apply
     const targetBits =
       (SensorBitmapShimmer3.SENSOR_EXG1_16BIT |
        SensorBitmapShimmer3.SENSOR_EXG2_16BIT) >>> 0;
@@ -394,10 +405,7 @@ export class Shimmer3RClient {
   async enableEXGTestSignal16Bit() {
     if (!this.rx) throw new Error('Not connected (RX missing)');
 
-    // 1) Ensure expansion power is ON (ACK-aware helper already exists)
-    await this.setInternalExpPower(1);
-
-    // 2) Program ADS1292R pages (EXG1 then EXG2)
+    // 1) Program ADS1292R pages (EXG1 then EXG2)
     //    These are the exact frames you provided.
     let writeEXG1Command = new Uint8Array([0x61, 0x00, 0x00, 0x0A, 0x02, 0xAB, 0x10, 0x15, 0x15, 0x00, 0x00, 0x00, 0x02, 0x01]);
     let writeEXG2Command = new Uint8Array([0x61, 0x01, 0x00, 0x0A, 0x02, 0xA3, 0x10, 0x15, 0x15, 0x00, 0x00, 0x00, 0x02, 0x01]);
@@ -412,7 +420,7 @@ export class Shimmer3RClient {
     await this._write(writeEXG2Command);
     await new Promise(r => setTimeout(r, 50));
 
-    // 3) Enable EXG1/EXG2 (16-bit) sensors in the 24-bit bitmap and apply
+    // 2) Enable EXG1/EXG2 (16-bit) sensors in the 24-bit bitmap and apply
     const targetBits =
       (SensorBitmapShimmer3.SENSOR_EXG1_16BIT |
        SensorBitmapShimmer3.SENSOR_EXG2_16BIT) >>> 0;
@@ -426,10 +434,7 @@ export class Shimmer3RClient {
     async enableECG16Bit() {
         if (!this.rx) throw new Error('Not connected (RX missing)');
 
-        // 1) Ensure expansion power is ON (ACK-aware helper already exists)
-        await this.setInternalExpPower(1);
-
-        // 2) Program ADS1292R pages (EXG1 then EXG2)
+        // 1) Program ADS1292R pages (EXG1 then EXG2)
         //    These are the exact frames you provided.
         let writeEXG1Command = new Uint8Array([0x61, 0x00, 0x00, 0x0A, 0x02, 0xA8, 0x10, 0x40, 0x40, 0x2D, 0x00, 0x00, 0x02, 0x03]);
         let writeEXG2Command = new Uint8Array([0x61, 0x01, 0x00, 0x0A, 0x02, 0xA0, 0x10, 0x40, 0x47, 0x00, 0x00, 0x00, 0x02, 0x01]);
@@ -444,7 +449,7 @@ export class Shimmer3RClient {
         await this._write(writeEXG2Command);
         await new Promise(r => setTimeout(r, 50));
 
-        // 3) Enable EXG1/EXG2 (16-bit) sensors in the 24-bit bitmap and apply
+        // 2) Enable EXG1/EXG2 (16-bit) sensors in the 24-bit bitmap and apply
         const targetBits =
             (SensorBitmapShimmer3.SENSOR_EXG1_16BIT |
                 SensorBitmapShimmer3.SENSOR_EXG2_16BIT) >>> 0;
@@ -581,6 +586,8 @@ export class Shimmer3RClient {
           enabledSensors |= SensorBitmapShimmer3.SENSOR_GYRO; break;
         case 0x12:
           enabledSensors |= SensorBitmapShimmer3.SENSOR_INT_A1; break;
+        case 0x1C:
+          enabledSensors |= SensorBitmapShimmer3.SENSOR_GSR; break;
         case 0x23: case 0x24:
           enabledSensors |= SensorBitmapShimmer3.SENSOR_EXG1_16BIT; break;
         case 0x25: case 0x26:
@@ -617,10 +624,19 @@ export class Shimmer3RClient {
 			let currentRange = this.gsrRangeSetting;
 			if (currentRange === 4) {
 			  currentRange = (gsrraw >> 14) & 0x03; // auto-range bits
-			}
-			
-			let gsr = calibrateGsrDataToResistanceFromAmplifierEq(adc12, currentRange);
-			oc.add(GSR_NAME,gsr, 'kOhm','cal');	
+            }
+            if (currentRange === 3) {
+                if (adc12 < GSR_UNCAL_LIMIT_RANGE3) {
+                    adc12 = GSR_UNCAL_LIMIT_RANGE3;
+                }
+            }
+            let gsrkOhm = calibrateGsrDataToResistanceFromAmplifierEq(adc12, currentRange);
+            gsrkOhm = nudgeGsrResistance(gsrkOhm, currentRange);
+            let gsrConductanceUSiemens = (1.0 / gsrkOhm) * 1000;
+            console.log('uSiemens: ' + gsrConductanceUSiemens);
+            oc.add(GSR_NAME, gsrConductanceUSiemens, 'uSiemens', 'cal');	
+            //oc.add(GSR_NAME, gsr, 'kOhm', 'cal');	
+
 		}
 	}
   }	  
@@ -868,4 +884,15 @@ function getOversamplingRatioADS1292R(samplingRate) {
   else if (samplingRate < 4000)  oversamplingRatio = 5;
 
   return oversamplingRatio;
+}
+function nudgeDouble(valToNudge, minVal, maxVal) {
+    return Math.max(minVal, Math.min(maxVal, valToNudge));
+}
+function nudgeGsrResistance(gsrResistanceKOhms, gsrRangeSetting) {
+    // In your C# code, rangeSetting == 4 means "no nudge" (pass-through)
+    if (gsrRangeSetting !== 4) {
+        const [minVal, maxVal] = SHIMMER3_GSR_RESISTANCE_MIN_MAX_KOHMS[gsrRangeSetting];
+        return nudgeDouble(gsrResistanceKOhms, minVal, maxVal);
+    }
+    return gsrResistanceKOhms;
 }
