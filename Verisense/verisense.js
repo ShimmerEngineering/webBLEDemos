@@ -17,6 +17,47 @@ class TinyEmitter {
   emit(ev, data) { const s = this._m.get(ev); if (s) for (const fn of s) fn(data); }
 }
 
+function parsePayload(response) {
+    const isAllFFs = (arr) => arr.every(b => b === 255);
+
+    // Skip Index 0, 1, 2 (Header and Length)
+    // New Index 0 was Old Index 3
+    const configHeader = response[0];
+
+    // ASMID: Old 4-9 -> New 1-6 (Still reversed)
+    const asmid = [...response.slice(1, 7)].reverse()
+                  .map(b => b.toString(16).padStart(2, '0')).join('');
+
+    // HW Version: Old 10-11 -> New 7-8
+    const revHwMajor = response[7];
+    const revHwMinor = response[8];
+
+    // FW Version: Old 12-13 -> New 9-10
+    const revFwMajor = response[9];
+    const revFwMinor = response[10];
+
+    // FW Internal: Old 14-15 -> New 11-12 (Little Endian)
+    const fwInternalArray = response.slice(11, 13);
+    const revFwInternal = fwInternalArray[0] | (fwInternalArray[1] << 8);
+
+    // HW Internal: Old 16-17 -> New 13-14
+    let revHwInternal = 0;
+    // Check if the array has enough bytes remaining (equivalent to old Length >= 14)
+    if (response.length >= 15) { 
+        const hwInternalArray = response.slice(13, 15);
+        if (!isAllFFs(hwInternalArray)) {
+            revHwInternal = hwInternalArray[0] | (hwInternalArray[1] << 8);
+        }
+    }
+
+    return {
+        hardware: `${revHwMajor}.${revHwMinor}.${revHwInternal}`,
+        firmware: `${revFwMajor}.${revFwMinor}.${revFwInternal}`,
+        asmid: asmid.toUpperCase(),
+        configHeader: configHeader
+    };
+}
+
 function normalizeOperationalConfig(payload) {
   if (!payload) return null;
   if (payload instanceof Uint8Array) return payload;
@@ -936,11 +977,13 @@ export class VerisenseBleDevice extends TinyEmitter {
 	console.log(`CONNECT`);
     this.emit("connected", { name: this.device.name, id: this.device.id });
 	 
+    await this.readProductionConfigFromDevice();	
+	
 	await this.readOpConfigFromDevice();
 	
     return true;
   }
-
+  
   // --- Web Serial (USB COM port) connect ---
   // Usage:
   //   const v = new VerisenseBleDevice(...);  // same protocol/core class
@@ -1695,6 +1738,26 @@ _clearSyncRxBuffers(reason = "") {
     return new Uint8Array(this.operationalConfig);
   }
   throw new Error("Operational config not cached. Call readOpConfigFromDevice() first.");
+}
+
+
+async readProductionConfigFromDevice() {
+  if (typeof this.readProductionConfig !== "function") {
+    throw new Error("readProductionConfig() not implemented in this build");
+  }
+
+  const rsp = await this.readProductionConfig(); // { payload }
+  const payload = rsp?.payload;
+  const prod = normalizeOperationalConfig(payload);
+
+  if (!prod || !prod.length) {
+    throw new Error("Invalid operational config returned from device");
+  }
+
+  this.productionConfig = prod;
+  console.log("Production Config:", prod);
+  console.log("Production Config:", parsePayload(prod));
+  this.emit("Production Config", parsePayload(prod));
 }
 
 /**
