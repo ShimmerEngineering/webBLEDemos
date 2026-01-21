@@ -17,32 +17,25 @@ class TinyEmitter {
   emit(ev, data) { const s = this._m.get(ev); if (s) for (const fn of s) fn(data); }
 }
 
-function parsePayload(response) {
+function parseProductionConfigPayload(response) {
     const isAllFFs = (arr) => arr.every(b => b === 255);
 
-    // Skip Index 0, 1, 2 (Header and Length)
-    // New Index 0 was Old Index 3
     const configHeader = response[0];
 
-    // ASMID: Old 4-9 -> New 1-6 (Still reversed)
     const asmid = [...response.slice(1, 7)].reverse()
                   .map(b => b.toString(16).padStart(2, '0')).join('');
 
-    // HW Version: Old 10-11 -> New 7-8
     const revHwMajor = response[7];
     const revHwMinor = response[8];
 
-    // FW Version: Old 12-13 -> New 9-10
     const revFwMajor = response[9];
     const revFwMinor = response[10];
 
-    // FW Internal: Old 14-15 -> New 11-12 (Little Endian)
     const fwInternalArray = response.slice(11, 13);
     const revFwInternal = fwInternalArray[0] | (fwInternalArray[1] << 8);
 
-    // HW Internal: Old 16-17 -> New 13-14
     let revHwInternal = 0;
-    // Check if the array has enough bytes remaining (equivalent to old Length >= 14)
+
     if (response.length >= 15) { 
         const hwInternalArray = response.slice(13, 15);
         if (!isAllFFs(hwInternalArray)) {
@@ -1756,8 +1749,8 @@ async readProductionConfigFromDevice() {
 
   this.productionConfig = prod;
   console.log("Production Config:", prod);
-  console.log("Production Config:", parsePayload(prod));
-  this.emit("Production Config", parsePayload(prod));
+  console.log("Production Config:", parseProductionConfigPayload(prod));
+  this.emit("Production Config", parseProductionConfigPayload(prod));
 }
 
 /**
