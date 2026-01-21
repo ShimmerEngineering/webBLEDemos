@@ -15,6 +15,18 @@ const TIMESTAMP_FIELD = {
   u16: { name: 'TIMESTAMP', fmt: 'u16', endian: 'le', sizeBytes: 2 },
   u24: { name: 'TIMESTAMP', fmt: 'u24', endian: 'le', sizeBytes: 3 },
 };
+const GSR_NAME = 'GSR';
+const GSR_UNCAL_LIMIT_RANGE3 = 683;
+const RAW = 'raw';
+const CAL = 'cal';
+
+const SHIMMER3_GSR_RESISTANCE_MIN_MAX_KOHMS = [
+    [8.0, 63.0],     // Range 0
+    [63.0, 220.0],   // Range 1
+    [220.0, 680.0],  // Range 2
+    [680.0, 4700.0]  // Range 3
+];
+
 
 // --- Sensor bitmap definitions (Shimmer3) ---
 export const SensorBitmapShimmer3 = {
@@ -45,10 +57,31 @@ export const SensorBitmapShimmer3 = {
 
 // Minimal ObjectCluster analogue
 export class ObjectCluster {
-  constructor(deviceId){ this.deviceId=deviceId; this.fields=[]; this.raw=null; }
-  add(n,v,u=null){ this.fields.push({name:n,value:v,unit:u}); }
-  get(n){ return this.fields.find(f=>f.name===n)||null; }
+  constructor(deviceId){ 
+    this.deviceId = deviceId; 
+    this.fields   = []; 
+    this.raw      = null; 
+  }
+
+  /**
+   * Add a field as a separate series.
+   * @param {string} name   e.g. 'GYRO_X' or 'GYRO_X_RAW'
+   * @param {number} value
+   * @param {string|null} unit  e.g. 'deg/s', 'g', 'µS', 'counts', 'raw'
+   * @param {'raw'|'cal'|null} kind  tag of the series
+   */
+  add(name, value, unit=null, kind=null){ 
+    this.fields.push({ name, value, unit, kind }); 
+  }
+
+  /**
+   * Get by name, optionally by kind (when there are both RAW and CAL with same name).
+   */
+  get(name, kind=null){ 
+    return this.fields.find(f => f.name === name && (kind === null || f.kind === kind)) || null; 
+  }
 }
+
 
 // Example subset (extend as needed)
 const CHANNEL_FORMATS = {
@@ -74,7 +107,8 @@ const CHANNEL_FORMATS = {
   0x24: { name: 'Exg1_CH2_16Bit', fmt: 'i16', endian: 'be', sizeBytes: 2 },
   0x25: { name: 'Exg2_CH1_16Bit', fmt: 'i16', endian: 'be', sizeBytes: 2 },
   0x26: { name: 'Exg2_CH2_16Bit', fmt: 'i16', endian: 'be', sizeBytes: 2 },
-  0x12: { name: 'PPG', fmt: 'i16', endian: 'le', sizeBytes: 2 }
+  0x12: { name: 'PPG', fmt: 'i16', endian: 'le', sizeBytes: 2 },
+  0x1C: { name: GSR_NAME, fmt: 'u16', endian: 'le', sizeBytes: 2 }
 };
 
 export class Shimmer3RClient {
@@ -96,10 +130,13 @@ export class Shimmer3RClient {
     // Stash for ACK+RSP in same notify
     this._lastAckRemainder = null; // Uint8Array | null
     this.enabledSensors = 0x000000; // store 24-bit bitmask
-
+	this.ExpPower = 0;	
     // NEW: ACK expectation counter and streaming state
     this._expectingAck = 0;
     this._streaming = false;
+    this.samplingRateHz = 0;
+	this.LIMIT_MIN_VALID_USIEMENS = 0.03;
+    this.gsrRangeSetting = 0;
   }
 
   _log(...a){ if(this.debug) console.log('[Shimmer3R]', ...a); }
@@ -132,6 +169,8 @@ export class Shimmer3RClient {
       this._rxBuf=new Uint8Array(0);
       this.schema=null;
       this._streaming=false;
+      // Clear cached expansion power state because we're disconnected
+      this.ExpPower = 0;
       this._emitStatus('Disconnected');
     }
   }
@@ -215,9 +254,16 @@ export class Shimmer3RClient {
     this._emitStatus(
       `Expansion power ${expPower ? 'enabled' : 'disabled'} (ACK received).`
     );
+	this.ExpPower = expPower;
+    // Notify any UI or caller interested in changes
+    try { this.onExpPowerChanged?.(expPower); } catch (e) { this._log('onExpPowerChanged handler error', e); }
     return { expPower, ackRemainder };
   }
 
+  getInternalExpPower(){
+	return this.ExpPower;
+  }
+	
   getEnabledSensors() {
     return this.enabledSensors;
   }
@@ -294,10 +340,9 @@ export class Shimmer3RClient {
     const appliedHz = 32768 / divisor;
 
     // Update any cached sampling info from Inquiry (purely informational)
-    this.lastSamplingDivisor = divisor;
-    this.lastSamplingHz = appliedHz;
+    this.samplingRateHz = appliedHz;
 
-    this._emitStatus(`Sampling rate ACKed. Applied ≈ ${appliedHz.toFixed(3)} Hz`);
+    this._emitStatus(`Sampling rate ACKed. Applied ≈ ${samplingRateHz.toFixed(3)} Hz`);
     return { requestedHz: rateHz, appliedHz, divisor, ackRemainder };
   }
 
@@ -326,13 +371,13 @@ export class Shimmer3RClient {
   async enableEMG16Bit() {
     if (!this.rx) throw new Error('Not connected (RX missing)');
 
-    // 1) Ensure expansion power is ON (ACK-aware helper already exists)
-    await this.setInternalExpPower(1);
-
-    // 2) Program ADS1292R pages (EXG1 then EXG2)
+    // 1) Program ADS1292R pages (EXG1 then EXG2)
     //    These are the exact frames you provided.
-    const writeEXG1Command = new Uint8Array([0x61, 0x00, 0x00, 0x0A, 0x02, 0xA8, 0x10, 0x69, 0x60, 0x20, 0x00, 0x00, 0x02, 0x03]);
-    const writeEXG2Command = new Uint8Array([0x61, 0x01, 0x00, 0x0A, 0x02, 0xA0, 0x10, 0xE1, 0xE1, 0x00, 0x00, 0x00, 0x02, 0x01]);
+    let writeEXG1Command = new Uint8Array([0x61, 0x00, 0x00, 0x0A, 0x02, 0xA8, 0x10, 0x69, 0x60, 0x20, 0x00, 0x00, 0x02, 0x03]);
+    let writeEXG2Command = new Uint8Array([0x61, 0x01, 0x00, 0x0A, 0x02, 0xA0, 0x10, 0xE1, 0xE1, 0x00, 0x00, 0x00, 0x02, 0x01]);
+    const oversamplingRatio = getOversamplingRatioADS1292R(this.samplingRateHz)
+    writeEXG1Command[4] = (((writeEXG1Command[4] >> 3) << 3) | oversamplingRatio) & 0xFF;//index 4 is where the 1st byte of the exg array
+    writeEXG2Command[4] = (((writeEXG2Command[4] >> 3) << 3) | oversamplingRatio) & 0xFF;//index 4 is where the 1st byte of the exg array   
 
     // Many firmwares ACK 0x61, but since that can vary, we do a plain write + short sleep.
     await this._write(writeEXG1Command);
@@ -340,7 +385,7 @@ export class Shimmer3RClient {
     await this._write(writeEXG2Command);
     await new Promise(r => setTimeout(r, 50));
 
-    // 3) Enable EXG1/EXG2 (16-bit) sensors in the 24-bit bitmap and apply
+    // 2) Enable EXG1/EXG2 (16-bit) sensors in the 24-bit bitmap and apply
     const targetBits =
       (SensorBitmapShimmer3.SENSOR_EXG1_16BIT |
        SensorBitmapShimmer3.SENSOR_EXG2_16BIT) >>> 0;
@@ -350,6 +395,71 @@ export class Shimmer3RClient {
 
     this._emitStatus('EMG 16-bit enabled on EXG1 & EXG2. Schema updated.');
   }
+  
+    /**
+   * Enable EMG (ADS1292R) in 16-bit mode on EXG1 & EXG2.
+   * - Powers the internal expansion rail
+   * - Writes the provided EXG1/EXG2 config pages
+   * - Enables SENSOR_EXG1_16BIT and SENSOR_EXG2_16BIT via setSensors()
+   * - Refreshes schema via inquiry()
+   */
+  async enableEXGTestSignal16Bit() {
+    if (!this.rx) throw new Error('Not connected (RX missing)');
+
+    // 1) Program ADS1292R pages (EXG1 then EXG2)
+    //    These are the exact frames you provided.
+    let writeEXG1Command = new Uint8Array([0x61, 0x00, 0x00, 0x0A, 0x02, 0xAB, 0x10, 0x15, 0x15, 0x00, 0x00, 0x00, 0x02, 0x01]);
+    let writeEXG2Command = new Uint8Array([0x61, 0x01, 0x00, 0x0A, 0x02, 0xA3, 0x10, 0x15, 0x15, 0x00, 0x00, 0x00, 0x02, 0x01]);
+    const oversamplingRatio = getOversamplingRatioADS1292R(this.samplingRateHz)
+    writeEXG1Command[4] = (((writeEXG1Command[4] >> 3) << 3) | oversamplingRatio) & 0xFF;//index 4 is where the 1st byte of the exg array
+    writeEXG2Command[4] = (((writeEXG2Command[4] >> 3) << 3) | oversamplingRatio) & 0xFF;//index 4 is where the 1st byte of the exg array    
+
+
+    // Many firmwares ACK 0x61, but since that can vary, we do a plain write + short sleep.
+    await this._write(writeEXG1Command);
+    await new Promise(r => setTimeout(r, 200));
+    await this._write(writeEXG2Command);
+    await new Promise(r => setTimeout(r, 50));
+
+    // 2) Enable EXG1/EXG2 (16-bit) sensors in the 24-bit bitmap and apply
+    const targetBits =
+      (SensorBitmapShimmer3.SENSOR_EXG1_16BIT |
+       SensorBitmapShimmer3.SENSOR_EXG2_16BIT) >>> 0;
+
+    const newMask = ((this.enabledSensors >>> 0) | targetBits) & 0xFFFFFF;
+    await this.setSensors(newMask);   // this already does an inquiry() to rebuild schema
+
+    this._emitStatus('EMG 16-bit enabled on EXG1 & EXG2. Schema updated.');
+  }
+  
+    async enableECG16Bit() {
+        if (!this.rx) throw new Error('Not connected (RX missing)');
+
+        // 1) Program ADS1292R pages (EXG1 then EXG2)
+        //    These are the exact frames you provided.
+        let writeEXG1Command = new Uint8Array([0x61, 0x00, 0x00, 0x0A, 0x02, 0xA8, 0x10, 0x40, 0x40, 0x2D, 0x00, 0x00, 0x02, 0x03]);
+        let writeEXG2Command = new Uint8Array([0x61, 0x01, 0x00, 0x0A, 0x02, 0xA0, 0x10, 0x40, 0x47, 0x00, 0x00, 0x00, 0x02, 0x01]);
+        const oversamplingRatio = getOversamplingRatioADS1292R(this.samplingRateHz)
+        writeEXG1Command[4] = (((writeEXG1Command[4] >> 3) << 3) | oversamplingRatio) & 0xFF;//index 4 is where the 1st byte of the exg array
+        writeEXG2Command[4] = (((writeEXG2Command[4] >> 3) << 3) | oversamplingRatio) & 0xFF;//index 4 is where the 1st byte of the exg array    
+
+
+        // Many firmwares ACK 0x61, but since that can vary, we do a plain write + short sleep.
+        await this._write(writeEXG1Command);
+        await new Promise(r => setTimeout(r, 200));
+        await this._write(writeEXG2Command);
+        await new Promise(r => setTimeout(r, 50));
+
+        // 2) Enable EXG1/EXG2 (16-bit) sensors in the 24-bit bitmap and apply
+        const targetBits =
+            (SensorBitmapShimmer3.SENSOR_EXG1_16BIT |
+                SensorBitmapShimmer3.SENSOR_EXG2_16BIT) >>> 0;
+
+        const newMask = ((this.enabledSensors >>> 0) | targetBits) & 0xFFFFFF;
+        await this.setSensors(newMask);   // this already does an inquiry() to rebuild schema
+
+        this._emitStatus('EMG 16-bit enabled on EXG1 & EXG2. Schema updated.');
+    }
   
   async startStreaming(){
     if (!this.schema) this._emitStatus('Starting stream without schema (not recommended).');
@@ -388,17 +498,33 @@ export class Shimmer3RClient {
 
   // ---- Inquiry decode → schema ----
   // ✅ Best-practice version of `_interpretInquiryResponseShimmer3R()` and `_buildSchema()`
-  // This approach mirrors the C# `InterpretDataPacketFormat()` logic more closely.
-  // It returns a schema object that includes not only field info, but also enabledSensors and packetSize.
+// This approach mirrors the C# `InterpretDataPacketFormat()` logic more closely.
+// It returns a schema object that includes not only field info, but also enabledSensors and packetSize.
 
   _interpretInquiryResponseShimmer3R(u8) {
     let base = 0;
-    if (u8[0] === OPCODES.INQUIRY_RSP && u8.length >= 2) base = 1;
+    if (u8[0] === OPCODES.INQUIRY_RSP && u8.length >= 2) base = 1; //base is 1 because the first index is the response code
 
-    const adcRaw = u16le(u8, base + 0);
-    const samplingHz = 32768 / (adcRaw || 1);
+      const adcRaw = u16le(u8, base + 0);
+      this._log("adc raw: " + adcRaw);
+      const samplingRateHz = 32768 / adcRaw;
+      this.samplingRateHz = samplingRateHz;
+      this._log("sampling rate: " + this.samplingRateHz);
+	
+	const cfg =
+      (BigInt(u8[base+2])       ) |
+      (BigInt(u8[base+3]) << 8n) |
+      (BigInt(u8[base+4]) << 16n) |
+      (BigInt(u8[base+5]) << 24n) |
+      (BigInt(u8[base+6]) << 32n) |
+      (BigInt(u8[base+7]) << 40n) |
+      (BigInt(u8[base+8]) << 48n);
 
-    const numCh = u8[base + 9] ?? 0;
+    const internalExpPower = Number((cfg >> 24n) & 0x1n);
+	const gsrRange = Number((cfg >> 25n) & 0x7n);
+    this.ExpPower = internalExpPower;
+	this.gsrRangeSetting = gsrRange;
+	const numCh = u8[base + 9] ?? 0;
     const bufSize = u8[base + 10] ?? 0;
     const chStart = base + 11;
     const chEnd = chStart + numCh;
@@ -412,11 +538,13 @@ export class Shimmer3RClient {
     this._log(
       `Schema built: timestampFmt=${schema.timestampFmt}, fields=${schema.fields.length}, enabledSensors=0x${schema.enabledSensors.toString(16)}`
     );
-
+    this._emitStatus(
+      `Expansion power ${this.ExpPower ? 'enabled' : 'disabled'} (ACK received).`
+    );
     return {
       opcode: u8[0],
       adcRaw,
-      samplingHz,
+      samplingRateHz,
       numChannels: numCh,
       bufferSize: bufSize,
       channelIds,
@@ -459,6 +587,8 @@ export class Shimmer3RClient {
           enabledSensors |= SensorBitmapShimmer3.SENSOR_GYRO; break;
         case 0x12:
           enabledSensors |= SensorBitmapShimmer3.SENSOR_INT_A1; break;
+        case 0x1C:
+          enabledSensors |= SensorBitmapShimmer3.SENSOR_GSR; break;
         case 0x23: case 0x24:
           enabledSensors |= SensorBitmapShimmer3.SENSOR_EXG1_16BIT; break;
         case 0x25: case 0x26:
@@ -483,6 +613,34 @@ export class Shimmer3RClient {
       dataPreambleByte: 0x00
     };
   }
+
+  _calibrateData(oc){
+    const snapshot = [...oc.fields]; // copy so pushes won't affect iteration
+	for (const field of snapshot) {
+		if (field.name === GSR_NAME){
+			const field = oc.get(GSR_NAME, RAW);
+			const gsrraw = field?.value ?? null;
+			//console.log(gsrraw);
+			let adc12 = (gsrraw & 0x0FFF);
+			let currentRange = this.gsrRangeSetting;
+			if (currentRange === 4) {
+			  currentRange = (gsrraw >> 14) & 0x03; // auto-range bits
+            }
+            if (currentRange === 3) {
+                if (adc12 < GSR_UNCAL_LIMIT_RANGE3) {
+                    adc12 = GSR_UNCAL_LIMIT_RANGE3;
+                }
+            }
+            let gsrkOhm = calibrateGsrDataToResistanceFromAmplifierEq(adc12, currentRange);
+            gsrkOhm = nudgeGsrResistance(gsrkOhm, this.gsrRangeSetting);
+            let gsrConductanceUSiemens = (1.0 / gsrkOhm) * 1000;
+            //console.log('uSiemens: ' + gsrConductanceUSiemens + ' ' + this.gsrRangeSetting + ' ' + currentRange);
+            oc.add(GSR_NAME, gsrConductanceUSiemens, 'uSiemens', CAL);	
+            //oc.add(GSR_NAME, gsr, 'kOhm', CAL);	
+
+		}
+	}
+  }	  
 
   _parseBySchema() {
     const sch = this.schema;
@@ -535,7 +693,7 @@ export class Shimmer3RClient {
           let ts;
           if (tsBytes === 2) { ts = u16le(frame, cursor); cursor += 2; }
           else { ts = u24le(frame, cursor); cursor += 3; }
-          oc.add('TIMESTAMP', ts);
+          oc.add('TIMESTAMP', ts, 'ticks', RAW);
 
           // Fields
           for (const f of sch.fields) {
@@ -560,7 +718,7 @@ export class Shimmer3RClient {
               default:    v = u16le(frame, cursor); // fallback
             }
             cursor += f.sizeBytes;
-            oc.add(f.name, v);
+            oc.add(f.name, v, null,RAW);
           }
 
           // Optional: anomaly log against lastTs (purely diagnostic)
@@ -572,8 +730,10 @@ export class Shimmer3RClient {
             }
           }
           this._lastTs = ts;
-
-          // Emit and consume one frame
+			
+		  this._calibrateData(oc); 	
+          
+		  // Emit and consume one frame
           this.onStreamFrame?.(oc);
           frames++;
           buf = buf.subarray(frameBytes);
@@ -674,6 +834,30 @@ export class Shimmer3RClient {
   _emitTemp(buf){ this._temps.forEach(fn=>{ try{ fn(buf);}catch(e){ this._log('temp handler error', e);} }); }
 }
 
+function calibrateGsrDataToResistanceFromAmplifierEq(gsrUncalibratedData, range) {
+  const SHIMMER3_REF_KOHMS = [40.2, 287.0, 1000.0, 3300.0];
+  const rFeedback = SHIMMER3_REF_KOHMS[range];
+  let volts = 0;
+  volts = calibrateShimmer3RAdcChannel(gsrUncalibratedData) / 1000.0; // convert mV → V
+  // Amplifier equation: Rsource = Rfeedback / ((Vout / 0.5) - 1)
+  const rSource = rFeedback / ((volts / 0.5) - 1.0);
+  return rSource; // in kΩ
+}
+
+function calibrateShimmer3RAdcChannel(unCalData) {
+  const offset = 0;
+  const vRefP = 3; // reference voltage in volts
+  const gain = 1;
+  return calibrateU12AdcValue(unCalData, offset, vRefP, gain);
+}
+
+function calibrateU12AdcValue(uncalibratedData, offset, vRefP, gain) {
+  // Formula: (uncalibrated - offset) * ((vRefP * 1000 / gain) / 4095)
+  const calibratedData = (uncalibratedData - offset) * (((vRefP * 1000) / gain) / 4095);
+  return calibratedData;
+}
+
+
 // ---- Byte helpers ----
 function concatU8(a,b){ const o=new Uint8Array(a.length+b.length); o.set(a); o.set(b,a.length); return o; }
 function u16le(b,o){ return b[o] | (b[o+1]<<8); }
@@ -683,3 +867,33 @@ function u24be(b,o){ return (b[o]<<16) | (b[o+1]<<8) | b[o+2]; }
 function sign16(v){ return (v & 0x8000) ? (v | 0xFFFF0000) : v; }
 function sign24(v){ return (v & 0x800000) ? (v | 0xFF000000) : v; }
 function hex2(v){ return v.toString(16).padStart(2,'0').toUpperCase(); }
+function getOversamplingRatioADS1292R(samplingRate) {
+  if (!Number.isFinite(samplingRate)) {
+    throw new TypeError('samplingRate must be a finite number');
+  }
+  if (samplingRate < 0) {
+    throw new RangeError('samplingRate must be non-negative');
+  }
+
+  let oversamplingRatio = 6; // >=4000
+
+  if (samplingRate < 125)        oversamplingRatio = 0;
+  else if (samplingRate < 250)   oversamplingRatio = 1;
+  else if (samplingRate < 500)   oversamplingRatio = 2;
+  else if (samplingRate < 1000)  oversamplingRatio = 3;
+  else if (samplingRate < 2000)  oversamplingRatio = 4;
+  else if (samplingRate < 4000)  oversamplingRatio = 5;
+
+  return oversamplingRatio;
+}
+function nudgeDouble(valToNudge, minVal, maxVal) {
+    return Math.max(minVal, Math.min(maxVal, valToNudge));
+}
+function nudgeGsrResistance(gsrResistanceKOhms, gsrRangeSetting) {
+    // In your C# code, rangeSetting == 4 means "no nudge" (pass-through)
+    if (gsrRangeSetting !== 4) {
+        const [minVal, maxVal] = SHIMMER3_GSR_RESISTANCE_MIN_MAX_KOHMS[gsrRangeSetting];
+        return nudgeDouble(gsrResistanceKOhms, minVal, maxVal);
+    }
+    return gsrResistanceKOhms;
+}
