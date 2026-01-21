@@ -3,7 +3,7 @@
 // Your note: "timestamp is u24, so layout is: 0x00  [u24 timestamp]  <channel samples...>"
 // This build defaults to u24, and you can also pass { timestampFmt: 'u24' } in the constructor.
 
-const OPCODES = { DATA: 0x00, INQUIRY_CMD: 0x01, INQUIRY_RSP: 0x02, START_STREAM: 0x07, STOP_STREAM: 0x20, ACK: 0xFF, SAMPLING_RATE: 0x05, SET_SENSORS_CMD: 0x08, SET_INTERNAL_EXP_POWER_ENABLE_CMD: 0x5E};
+const OPCODES = { DATA: 0x00, INQUIRY_CMD: 0x01, INQUIRY_RSP: 0x02, START_STREAM: 0x07, STOP_STREAM: 0x20, ACK: 0xFF, SAMPLING_RATE: 0x05, SET_SENSORS_CMD: 0x08, SET_INTERNAL_EXP_POWER_ENABLE_CMD: 0x5E, START_BT_STEAM_SD_Logging: 0x70, STOP_BT_STEAM_SD_Logging: 0x97};
 
 const DEFAULTS = {
   SERVICE_UUID: '65333333-a115-11e2-9e9a-0800200ca100',
@@ -486,6 +486,41 @@ export class Shimmer3RClient {
 
     try {
       await this._write(new Uint8Array([OPCODES.STOP_STREAM]));
+      this._emitStatus('STOP_STREAM command sent (skipped ACK wait).');
+    } catch (err) {
+      this._emitStatus(`STOP_STREAM write failed: ${err.message}`);
+    }
+
+    this._streaming = false;         // stop treating notifies as data-plane
+    this._rxBuf = new Uint8Array(0); // optional flush
+    this._emitStatus('Streaming stopped (ACK skipped for latency tolerance).');
+  }
+  
+  async startStreamingandLogging(){
+    if (!this.schema) this._emitStatus('Starting stream without schema (not recommended).');
+    this._emitStatus('START_STREAM → waiting for ACK…');
+
+    const remainder = await this._writeExpectingAck(new Uint8Array([OPCODES.START_BT_STEAM_SD_Logging]), 1500);
+
+    // Now streaming
+    this._streaming = true;
+
+    if (remainder && remainder.length){
+      if (remainder[0] === OPCODES.DATA) {
+        this._log('Unexpected DATA after START_STREAM ACK (appending to buffer)');
+        this._rxBuf = concatU8(this._rxBuf, remainder);
+      } else {
+        this._emitTemp(remainder); // non-DATA control-plane
+      }
+    }
+    this._emitStatus('START_STREAM ACK received; frames should follow');
+  }
+
+  async stopStreamingandLogging() {
+    this._emitStatus('STOP_STREAM → sending (no ACK wait)…');
+
+      try {
+          await this._write(new Uint8Array([OPCODES.STOP_BT_STEAM_SD_Logging]));
       this._emitStatus('STOP_STREAM command sent (skipped ACK wait).');
     } catch (err) {
       this._emitStatus(`STOP_STREAM write failed: ${err.message}`);
