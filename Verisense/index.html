@@ -80,7 +80,13 @@
       </div>
     </div>
   </div>
-
+<div class="dfu-link-container" style="margin: 10px 0;">
+    <a href="https://shimmerengineering.github.io/ASM_web-bluetooth-dfu/examples/web.html" 
+       target="_blank" 
+       style="background-color: #007bff; color: white; padding: 10px 15px; text-decoration: none; border-radius: 5px; font-family: sans-serif; display: inline-block;">
+        🔗 Open DFU Update Tool
+    </a>
+</div>
 <script type="module">
     import { VerisenseBleDevice } from "./verisense.js";
 
@@ -589,6 +595,13 @@ chkBattEnable.addEventListener("change", () => {
       });
 
       // Optional: surface op-config logs on page
+	  dev.on("Production Config", (config) => {
+		log("Production Config received", { 
+			hw: config.hardware, 
+			fw: config.firmware, 
+			id: config.asmid 
+			});
+		});
       dev.on("opConfig", ({ op }) => log("opConfig received", { len: op?.length, head: Array.from(op?.slice?.(0, 16) ?? []) }));
       dev.on("opConfigError", (e) => log("opConfigError", e));
     }
