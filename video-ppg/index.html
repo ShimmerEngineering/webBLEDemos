@@ -132,7 +132,9 @@
   <div id="chartContainer">
     <canvas id="ppgChartCanvas" height="200" aria-label="PPG waveform"></canvas>
   </div>
-
+	<div class="card" style="margin-top: 20px;">
+	  <canvas id="gsrChart" width="400" height="200"></canvas>
+	</div>
   <p id="hrDisclaimer">
     ⚠️ <strong>Note:</strong> Heart rate estimation here is for demonstration only and has not been validated.
   </p>
@@ -156,11 +158,21 @@
     showTipBtn: document.getElementById('showTipBtn'),
     deviceName: document.getElementById('deviceName'),
     statusConsole: document.getElementById('statusConsole'),
-    chartCanvas: document.getElementById('ppgChartCanvas')
+    chartCanvas: document.getElementById('ppgChartCanvas'),
+	gsrchartCanvas: document.getElementById('gsrChart')
   };
 
   const STORAGE_KEYS = { HIDE_OVERLAY: 'hidePPGIntroOverlay' };
   const state = {
+    chart: null,
+    signalBuf: [],
+    peakTimestamps: [],
+    drawQueue: [],
+    rafPending: false,
+    sampleX: 0
+  };
+
+  const stateGSR = {
     chart: null,
     signalBuf: [],
     peakTimestamps: [],
@@ -230,6 +242,40 @@
         plugins: { decimation: { enabled: true, algorithm: 'min-max' }, legend: { labels: { color: '#fff' } } }
       }
     });
+	
+	const gsrCtx = el.gsrchartCanvas.getContext('2d');
+	// Initialize the GSR Chart
+stateGSR.chart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        datasets: [{
+          label: 'GSR Signal',
+          data: [],                 // {x,y}
+          borderColor: 'cyan',
+          borderWidth: 2,
+          tension: 0.1,
+          pointRadius: 0,
+        }]
+      },
+      options: {
+        animation: false,
+        parsing: false,
+        normalized: true,
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: { type: 'linear', display: false },
+          y: {
+            title: { display: true, text: 'GSR' },
+            beginAtZero: false,
+            grid: { color: '#333' },
+            ticks: { color: '#ddd' }
+          }
+        },
+        plugins: { decimation: { enabled: true, algorithm: 'min-max' }, legend: { labels: { color: '#fff' } } }
+      }
+    });
+	
   }
 
   // Throttled drawing (≈30 FPS)
@@ -257,6 +303,33 @@
     }
     chart.update('none');
   }
+  
+    // Throttled drawing (≈30 FPS)
+  let lastFrameTimeGSR = 0;
+  
+function enqueueForDrawGSR(gsrValue) {
+    stateGSR.drawQueue.push(gsrValue);
+    const now = performance.now();
+    if (!stateGSR.rafPending && (now - lastFrameTimeGSR >= FRAME_INTERVAL_MS)) {
+      stateGSR.rafPending = true;
+      requestAnimationFrame(flushDrawGSR);
+    }
+  }
+  function flushDrawGSR(ts) {
+    stateGSR.rafPending = false;
+    lastFrameTime = ts || performance.now();
+    const chart = stateGSR.chart; if (!chart) return;
+
+    const MAX_POINTS = 512;
+    const ds = chart.data.datasets[0].data;
+    while (stateGSR.drawQueue.length) {
+      const v = stateGSR.drawQueue.shift();
+      ds.push({ x: stateGSR.sampleX++, y: v });
+      if (ds.length > MAX_POINTS) ds.shift();
+    }
+    chart.update('none');
+  }
+
 
   // =====================
   // Demo HR estimator
@@ -309,11 +382,17 @@
 
   shim.onStreamFrame = (oc) => {
     const field = oc.get('PPG') || oc.fields.find(f => typeof f.value === 'number');
-    if (!field) return;
-    const ppg = field.value;
-    enqueueForDraw(ppg);
-    const bpm = detectHeartRate(ppg);
-    if (bpm) setStatus(`❤️ BPM: ${bpm}`);
+    if (!field) {
+		const ppg = field.value;
+		enqueueForDraw(ppg);
+		const bpm = detectHeartRate(ppg);
+		if (bpm) setStatus(`❤️ BPM: ${bpm}`);
+	}
+	const gsrfield = oc.get('GSR') || oc.fields.find(f => typeof f.value === 'number');
+    if (!gsrfield) {
+		const gsr = field.value;
+		enqueueForDrawGSR(gsr);
+	}
   };
 
   // =====================
@@ -335,10 +414,10 @@
     // Inquiry: send 0x01 and build schema from response
     el.configureBtn.addEventListener('click', async () => {
       try {
-	    await shim.setInternalExpPower(1);
 	    await shim.setSamplingRate(128);
-        await shim.setSensors(256);
-		await shim.inquiry();
+		await shim.setInternalExpPower(1);
+	    
+        await shim.setSensors(260);
       } catch (e) {
         setStatus(`Inquiry failed: ${e.message}`);
       }

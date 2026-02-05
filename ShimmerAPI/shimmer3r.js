@@ -342,7 +342,7 @@ export class Shimmer3RClient {
     // Update any cached sampling info from Inquiry (purely informational)
     this.samplingRateHz = appliedHz;
 
-    this._emitStatus(`Sampling rate ACKed. Applied ≈ ${samplingRateHz.toFixed(3)} Hz`);
+    this._emitStatus(`Sampling rate ACKed. Applied ≈ ${this.samplingRateHz.toFixed(3)} Hz`);
     return { requestedHz: rateHz, appliedHz, divisor, ackRemainder };
   }
 
