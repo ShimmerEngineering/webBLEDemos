@@ -3,7 +3,7 @@
 // Your note: "timestamp is u24, so layout is: 0x00  [u24 timestamp]  <channel samples...>"
 // This build defaults to u24, and you can also pass { timestampFmt: 'u24' } in the constructor.
 
-const OPCODES = { DATA: 0x00, INQUIRY_CMD: 0x01, INQUIRY_RSP: 0x02, START_STREAM: 0x07, STOP_STREAM: 0x20, ACK: 0xFF, SAMPLING_RATE: 0x05, SET_SENSORS_CMD: 0x08, SET_INTERNAL_EXP_POWER_ENABLE_CMD: 0x5E, START_BT_STEAM_SD_Logging: 0x70, STOP_BT_STEAM_SD_Logging: 0x97};
+const OPCODES = { DATA: 0x00, INQUIRY_CMD: 0x01, INQUIRY_RSP: 0x02, START_STREAM: 0x07, STOP_STREAM: 0x20, ACK: 0xFF, SAMPLING_RATE: 0x05, SET_SENSORS_CMD: 0x08, SET_GSR_RANGE: 0x21, SET_INTERNAL_EXP_POWER_ENABLE_CMD: 0x5E, START_BT_STEAM_SD_Logging: 0x70, STOP_BT_STEAM_SD_Logging: 0x97};
 
 const DEFAULTS = {
   SERVICE_UUID: '65333333-a115-11e2-9e9a-0800200ca100',
@@ -258,6 +258,35 @@ export class Shimmer3RClient {
     // Notify any UI or caller interested in changes
     try { this.onExpPowerChanged?.(expPower); } catch (e) { this._log('onExpPowerChanged handler error', e); }
     return { expPower, ackRemainder };
+  }
+  
+  /**
+   * Control the GSR Range
+   * @param {number} gsrRange is between 0 and 4. 0 = 8-63kOhm, 1 = 63-220kOhm, 2 = 220-680kOhm, 3 = 680kOhm-4.7MOhm, 4 = Auto range
+   */
+  async setGSRRange(gsrRange) {
+    if (!Number.isInteger(gsrRange) || gsrRange < 0 || gsrRange > 4) {
+      throw new Error('gsr range must be 0-4 value');
+    }
+    if (!this.rx) throw new Error('Not connected (RX missing)');
+
+    const cmd = new Uint8Array([
+      OPCODES.SET_GSR_RANGE,
+      gsrRange & 0xFF,
+    ]);
+
+    this._emitStatus(
+      `SET_GSR_RANGE → waiting for ACK…`
+    );
+
+    const ackRemainder = await this._writeExpectingAck(cmd, 1500);
+
+    this._emitStatus(
+      `SET_GSR_RANGE (ACK received).`
+    );
+	this.gsrRangeSetting = gsrRange;
+    // Notify any UI or caller interested in changes
+    return { gsrRange, ackRemainder };
   }
 
   getInternalExpPower(){

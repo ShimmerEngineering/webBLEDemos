@@ -54,6 +54,7 @@
     iframe { display: block; margin: 16px auto 0; width: 100%; max-width: var(--maxw); aspect-ratio: 16 / 9; border: none; border-radius: 10px; overflow: hidden; box-shadow: 0 0 0 1px var(--border); background: #000; }
 
     #chartContainer { max-width: var(--maxw); margin: 18px auto; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
+    #chartContainer2 { max-width: var(--maxw); margin: 18px auto; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
 
     #hrDisclaimer { max-width: var(--maxw); margin: 8px auto 18px; color: #f39c12; font-size: 14px; }
 
@@ -132,7 +133,9 @@
   <div id="chartContainer">
     <canvas id="ppgChartCanvas" height="200" aria-label="PPG waveform"></canvas>
   </div>
-
+	<div id="chartContainer2">
+	  <canvas id="gsrChart" height="200" aria-label="GSR waveform"></canvas>
+	</div>
   <p id="hrDisclaimer">
     ⚠️ <strong>Note:</strong> Heart rate estimation here is for demonstration only and has not been validated.
   </p>
@@ -156,11 +159,21 @@
     showTipBtn: document.getElementById('showTipBtn'),
     deviceName: document.getElementById('deviceName'),
     statusConsole: document.getElementById('statusConsole'),
-    chartCanvas: document.getElementById('ppgChartCanvas')
+    chartCanvas: document.getElementById('ppgChartCanvas'),
+	gsrchartCanvas: document.getElementById('gsrChart')
   };
 
   const STORAGE_KEYS = { HIDE_OVERLAY: 'hidePPGIntroOverlay' };
   const state = {
+    chart: null,
+    signalBuf: [],
+    peakTimestamps: [],
+    drawQueue: [],
+    rafPending: false,
+    sampleX: 0
+  };
+
+  const stateGSR = {
     chart: null,
     signalBuf: [],
     peakTimestamps: [],
@@ -230,6 +243,40 @@
         plugins: { decimation: { enabled: true, algorithm: 'min-max' }, legend: { labels: { color: '#fff' } } }
       }
     });
+	
+	const gsrCtx = el.gsrchartCanvas.getContext('2d');
+	// Initialize the GSR Chart
+stateGSR.chart = new Chart(gsrCtx, {
+      type: 'line',
+      data: {
+        datasets: [{
+          label: 'GSR Signal (µS)',
+          data: [],                 // {x,y}
+          borderColor: 'cyan',
+          borderWidth: 2,
+          tension: 0.1,
+          pointRadius: 0,
+        }]
+      },
+      options: {
+        animation: false,
+        parsing: false,
+        normalized: true,
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: { type: 'linear', display: false },
+          y: {
+            title: { display: true, text: 'GSR' },
+            beginAtZero: false,
+            grid: { color: '#333' },
+            ticks: { color: '#ddd' }
+          }
+        },
+        plugins: { decimation: { enabled: true, algorithm: 'min-max' }, legend: { labels: { color: '#fff' } } }
+      }
+    });
+	
   }
 
   // Throttled drawing (≈30 FPS)
@@ -257,6 +304,33 @@
     }
     chart.update('none');
   }
+  
+    // Throttled drawing (≈30 FPS)
+  let lastFrameTimeGSR = 0;
+  
+function enqueueForDrawGSR(gsrValue) {
+    stateGSR.drawQueue.push(gsrValue);
+    const now = performance.now();
+    if (!stateGSR.rafPending && (now - lastFrameTimeGSR >= FRAME_INTERVAL_MS)) {
+      stateGSR.rafPending = true;
+      requestAnimationFrame(flushDrawGSR);
+    }
+  }
+  function flushDrawGSR(ts) {
+    stateGSR.rafPending = false;
+    lastFrameTimeGSR = ts || performance.now();
+    const chart = stateGSR.chart; if (!chart) return;
+
+    const MAX_POINTS = 512;
+    const ds = chart.data.datasets[0].data;
+    while (stateGSR.drawQueue.length) {
+      const v = stateGSR.drawQueue.shift();
+      ds.push({ x: stateGSR.sampleX++, y: v });
+      if (ds.length > MAX_POINTS) ds.shift();
+    }
+    chart.update('none');
+  }
+
 
   // =====================
   // Demo HR estimator
@@ -308,13 +382,22 @@
   };
 
   shim.onStreamFrame = (oc) => {
-    const field = oc.get('PPG') || oc.fields.find(f => typeof f.value === 'number');
-    if (!field) return;
-    const ppg = field.value;
+
+  const ppgField = oc.get('PPG','raw'); //raw = raw adc value
+  if (ppgField) {
+    const ppg = ppgField.value;
     enqueueForDraw(ppg);
+
     const bpm = detectHeartRate(ppg);
     if (bpm) setStatus(`❤️ BPM: ${bpm}`);
-  };
+  }
+
+  const gsrField = oc.get('GSR','cal'); //cal = calibrated value
+  if (gsrField) {
+    const gsr = gsrField.value;
+    enqueueForDrawGSR(gsr);
+  }
+};
 
   // =====================
   // UI Actions
@@ -335,10 +418,10 @@
     // Inquiry: send 0x01 and build schema from response
     el.configureBtn.addEventListener('click', async () => {
       try {
-	    await shim.setInternalExpPower(1);
 	    await shim.setSamplingRate(128);
-        await shim.setSensors(256);
-		await shim.inquiry();
+		await shim.setInternalExpPower(1);
+	    await shim.setGSRRange(4);//set to auto range = 4
+        await shim.setSensors(260); //enable ppg and gsr
       } catch (e) {
         setStatus(`Inquiry failed: ${e.message}`);
       }
