@@ -178,12 +178,33 @@
       shimmer.onStreamFrame = onFrame;
       document.getElementById('status').textContent = 'Streaming…';
     };
-
     document.getElementById('stopBtn').onclick = async () => {
+        if (!shimmer.device) return alert('Connect first.');
+        isStreaming = true;
+        fileBuffer = [];
+        headerRow = [];
+        sampleCounter = 0;
+        signalListInitialized = false;
+        await shimmer.stopStreaming();
+        shimmer.onStreamFrame = onFrame;
+        document.getElementById('status').textContent = 'Streaming stopped…';
+    };
+    document.getElementById('startSDBTBtn').onclick = async () => {
+        if (!shimmer.device) return alert('Connect first.');
+        isStreaming = true;
+        fileBuffer = [];
+        headerRow = [];
+        sampleCounter = 0;
+        await shimmer.startStreamingandLogging();
+        shimmer.onStreamFrame = onFrame;
+        document.getElementById('status').textContent = 'Streaming and SD Logging…';
+    };
+
+    document.getElementById('stopSDBTBtn').onclick = async () => {
       isStreaming = false;
       try {
-        await shimmer.stopStreaming();
-        document.getElementById('status').textContent = 'Stream stopped.';
+        await shimmer.stopStreamingandLogging();
+        document.getElementById('status').textContent = 'Streaming and SD Logging stopped.';
       } catch (e) {
         console.error('Error while stopping stream:', e);
         alert('Error stopping stream: ' + e.message);
@@ -365,14 +386,14 @@ if (!isStreaming || !chart) return;
   <h2>Shimmer Capture (Shimmer3R BLE)</h2>
   <div id="toolbar">
       <button id="connectBtn">Connect</button>
-      <button id="startBtn">Start Stream</button>
-      <button id="stopBtn">Stop</button>
+      <button id="startBtn">Start BT Stream</button>
+      <button id="stopBtn">Stop BT</button>
+      <button id="startSDBTBtn">Start BT+SD</button>
+      <button id="stopSDBTBtn">Stop BT+SD</button>
       <button id="disconnectBtn">Disconnect</button>
       <button id="saveBtn">Start Saving</button>
-
       <select id="sensorMenu" multiple size="5" style="margin-left:10px; min-width: 220px;"></select>
       <button id="applySensorsBtn">Apply Sensors</button>
-
       <button id="exgTestBtn" disabled>EXG Test (16‑bit)</button>
       <button id="emg16Btn" disabled>Enable EMG 16‑bit</button>
       <button id="ecg16Btn" disabled>Enable ECG 16‑bit</button>
