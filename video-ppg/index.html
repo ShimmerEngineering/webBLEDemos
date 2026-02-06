@@ -420,8 +420,8 @@ function enqueueForDrawGSR(gsrValue) {
       try {
 	    await shim.setSamplingRate(128);
 		await shim.setInternalExpPower(1);
-	    
-        await shim.setSensors(260);
+	    await shim.setGSRRange(4);//set to auto range = 4
+        await shim.setSensors(260); //enable ppg and gsr
       } catch (e) {
         setStatus(`Inquiry failed: ${e.message}`);
       }
