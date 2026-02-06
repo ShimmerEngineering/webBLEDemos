@@ -17,6 +17,40 @@ class TinyEmitter {
   emit(ev, data) { const s = this._m.get(ev); if (s) for (const fn of s) fn(data); }
 }
 
+function parseProductionConfigPayload(response) {
+    const isAllFFs = (arr) => arr.every(b => b === 255);
+
+    const configHeader = response[0];
+
+    const asmid = [...response.slice(1, 7)].reverse()
+                  .map(b => b.toString(16).padStart(2, '0')).join('');
+
+    const revHwMajor = response[7];
+    const revHwMinor = response[8];
+
+    const revFwMajor = response[9];
+    const revFwMinor = response[10];
+
+    const fwInternalArray = response.slice(11, 13);
+    const revFwInternal = fwInternalArray[0] | (fwInternalArray[1] << 8);
+
+    let revHwInternal = 0;
+
+    if (response.length >= 15) { 
+        const hwInternalArray = response.slice(13, 15);
+        if (!isAllFFs(hwInternalArray)) {
+            revHwInternal = hwInternalArray[0] | (hwInternalArray[1] << 8);
+        }
+    }
+
+    return {
+        hardware: `${revHwMajor}.${revHwMinor}.${revHwInternal}`,
+        firmware: `${revFwMajor}.${revFwMinor}.${revFwInternal}`,
+        asmid: asmid.toUpperCase(),
+        configHeader: configHeader
+    };
+}
+
 function normalizeOperationalConfig(payload) {
   if (!payload) return null;
   if (payload instanceof Uint8Array) return payload;
@@ -936,11 +970,13 @@ export class VerisenseBleDevice extends TinyEmitter {
 	console.log(`CONNECT`);
     this.emit("connected", { name: this.device.name, id: this.device.id });
 	 
+    await this.readProductionConfigFromDevice();	
+	
 	await this.readOpConfigFromDevice();
 	
     return true;
   }
-
+  
   // --- Web Serial (USB COM port) connect ---
   // Usage:
   //   const v = new VerisenseBleDevice(...);  // same protocol/core class
@@ -1695,6 +1731,26 @@ _clearSyncRxBuffers(reason = "") {
     return new Uint8Array(this.operationalConfig);
   }
   throw new Error("Operational config not cached. Call readOpConfigFromDevice() first.");
+}
+
+
+async readProductionConfigFromDevice() {
+  if (typeof this.readProductionConfig !== "function") {
+    throw new Error("readProductionConfig() not implemented in this build");
+  }
+
+  const rsp = await this.readProductionConfig(); // { payload }
+  const payload = rsp?.payload;
+  const prod = normalizeOperationalConfig(payload);
+
+  if (!prod || !prod.length) {
+    throw new Error("Invalid operational config returned from device");
+  }
+
+  this.productionConfig = prod;
+  console.log("Production Config:", prod);
+  console.log("Production Config:", parseProductionConfigPayload(prod));
+  this.emit("Production Config", parseProductionConfigPayload(prod));
 }
 
 /**
