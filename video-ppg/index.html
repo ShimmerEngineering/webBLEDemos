@@ -54,6 +54,7 @@
     iframe { display: block; margin: 16px auto 0; width: 100%; max-width: var(--maxw); aspect-ratio: 16 / 9; border: none; border-radius: 10px; overflow: hidden; box-shadow: 0 0 0 1px var(--border); background: #000; }
 
     #chartContainer { max-width: var(--maxw); margin: 18px auto; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
+    #chartContainer2 { max-width: var(--maxw); margin: 18px auto; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
 
     #hrDisclaimer { max-width: var(--maxw); margin: 8px auto 18px; color: #f39c12; font-size: 14px; }
 
@@ -132,8 +133,8 @@
   <div id="chartContainer">
     <canvas id="ppgChartCanvas" height="200" aria-label="PPG waveform"></canvas>
   </div>
-	<div class="card" style="margin-top: 20px;">
-	  <canvas id="gsrChart" width="400" height="200"></canvas>
+	<div id="chartContainer2">
+	  <canvas id="gsrChart" height="200" aria-label="GSR waveform"></canvas>
 	</div>
   <p id="hrDisclaimer">
     ⚠️ <strong>Note:</strong> Heart rate estimation here is for demonstration only and has not been validated.
@@ -245,11 +246,11 @@
 	
 	const gsrCtx = el.gsrchartCanvas.getContext('2d');
 	// Initialize the GSR Chart
-stateGSR.chart = new Chart(ctx, {
+stateGSR.chart = new Chart(gsrCtx, {
       type: 'line',
       data: {
         datasets: [{
-          label: 'GSR Signal',
+          label: 'GSR Signal (µS)',
           data: [],                 // {x,y}
           borderColor: 'cyan',
           borderWidth: 2,
@@ -317,7 +318,7 @@ function enqueueForDrawGSR(gsrValue) {
   }
   function flushDrawGSR(ts) {
     stateGSR.rafPending = false;
-    lastFrameTime = ts || performance.now();
+    lastFrameTimeGSR = ts || performance.now();
     const chart = stateGSR.chart; if (!chart) return;
 
     const MAX_POINTS = 512;
@@ -381,19 +382,22 @@ function enqueueForDrawGSR(gsrValue) {
   };
 
   shim.onStreamFrame = (oc) => {
-    const field = oc.get('PPG') || oc.fields.find(f => typeof f.value === 'number');
-    if (!field) {
-		const ppg = field.value;
-		enqueueForDraw(ppg);
-		const bpm = detectHeartRate(ppg);
-		if (bpm) setStatus(`❤️ BPM: ${bpm}`);
-	}
-	const gsrfield = oc.get('GSR') || oc.fields.find(f => typeof f.value === 'number');
-    if (!gsrfield) {
-		const gsr = field.value;
-		enqueueForDrawGSR(gsr);
-	}
-  };
+
+  const ppgField = oc.get('PPG','raw'); //raw = raw adc value
+  if (ppgField) {
+    const ppg = ppgField.value;
+    enqueueForDraw(ppg);
+
+    const bpm = detectHeartRate(ppg);
+    if (bpm) setStatus(`❤️ BPM: ${bpm}`);
+  }
+
+  const gsrField = oc.get('GSR','cal'); //cal = calibrated value
+  if (gsrField) {
+    const gsr = gsrField.value;
+    enqueueForDrawGSR(gsr);
+  }
+};
 
   // =====================
   // UI Actions
