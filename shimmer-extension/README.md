@@ -1,0 +1,1 @@
+Note that shimmer3r.js is copied over from ShimmerAPI folder, please grab/replace if you want the latest version of the API
