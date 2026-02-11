@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head>
+<!-- Google tag (gtag.js) -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-T26GWN0LJW"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}    
+    gtag('js', new Date());
+    gtag('config', 'G-T26GWN0LJW');
+  </script>
+  <title>Shimmer Companion</title>
+  <script src="chart.min.js"></script>
+  <style>
+    body { font-family: Arial; width: 300px; padding: 10px; }
+    button { width: 100%; margin: 5px 0; padding: 10px; cursor: pointer; }
+    #statusLabel { font-weight: bold; }
+    canvas { width: 100%; height: 200px; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <h3>Shimmer Companion</h3>
+  
+  <button id="scanBtn">Scan & Connect</button>
+  <button id="streamBtn">Start Stream</button>
+  
+  <p>Status: <span id="statusLabel">Disconnected</span></p>
+  
+  <p>Watching: <span id="videoTitleLabel">Waiting...</span></p>
+<p>Video Timestamp: <span id="videoTime">0.00</span>s</p>
+  <button id="downloadBtn" style="background-color: #4CAF50; color: white;">Download CSV Results</button>
+<div class="chart-container">
+  <h4>GSR (&microS)</h4>
+  <canvas id="gsrChart"></canvas>
+</div>
+
+<div class="chart-container">
+  <h4>PPG (Raw ADC)</h4>
+  <canvas id="ppgChart"></canvas>
+</div>
+
+<style>
+  .chart-container { height: 200px; margin-bottom: 20px; }
+  canvas { background: #f9f9f9; border: 1px solid #ddd; }
+</style>
+  <script type="module" src="shimmercompanion.js"></script>
+</body>
+</html>
