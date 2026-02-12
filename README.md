@@ -18,9 +18,9 @@ If sufficient interest is registered, we may prioritize building a more fully sc
 
 [Two Gyro Example](https://shimmerengineering.github.io/webBLEDemos/brick/)
 
-[Shimmer Capture] (https://shimmerengineering.github.io/webBLEDemos/ShimmerCapture/)
+[Shimmer Capture](https://shimmerengineering.github.io/webBLEDemos/ShimmerCapture/)
 
-[Shimmer3R Chrome Extension]  (https://github.com/ShimmerEngineering/webBLEDemos/tree/main/shimmer-extension) source code only, will require loading this locally via Chrome
+[Shimmer3R Chrome Extension](https://github.com/ShimmerEngineering/webBLEDemos/tree/main/shimmer-extension) source code only, will require loading this locally via Chrome
 
 # Requirements
 - Verisense
