@@ -389,7 +389,7 @@
     const client = new Shimmer3RClient({ timestampFmt: 'u24', debug: true });
 
     client.onStatus = (msg) => log(msg);
-    client.onInquiry = (info) => log(`Inquiry → ${info.numChannels} ch @ ${info.samplingHz.toFixed(2)} Hz`);
+    client.onInquiry = (info) => log(`Inquiry → ${info.numChannels} ch @ ${info.samplingRateHz.toFixed(2)} Hz`);
 
     // Use the already-exposed onStreamFrame from your API to read gyro without modifying the API
     let lastPrint = 0;
