@@ -401,6 +401,196 @@ class SensorLIS2DW12 extends SensorBase {
 }
 }
 
+// ---------- sensor: LSM6DSV accel/gyro (id=3) ----------
+class SensorLSM6DSV extends SensorBase {
+  constructor() {
+    super();
+
+    // Keep same alignment/offset convention as LSM6DS3 unless your C# says otherwise
+    this.offset = [0, 0, 0];
+    this.align = [
+      [0, 0, 1],
+      [-1, 0, 0],
+      [0, -1, 0]
+    ];
+
+    /**
+     * TODO: Replace these sensitivity tables with the correct values for LSM6DSV
+     * The convention used in your LSM6DS3 class:
+     *   unit = raw / diagLSBPerUnit
+     *
+     * For accel, you likely want "m/s^2" output; for gyro, "deg/s".
+     * If your sensor gives LSB per g and LSB per dps, you can convert to m/s^2
+     * by multiplying g by 9.80665 after scaling — OR bake it into the sens table.
+     */
+
+    // Placeholder defaults: set to the same as DS3 until you update with real DSV values
+    this.accSensByRange = {
+      "2G":  [1671.665922915, 1671.665922915, 1671.665922915],
+      "4G":  [835.832961457,  835.832961457,  835.832961457],
+      "8G":  [417.916480729,  417.916480729,  417.916480729],
+      "16G": [208.958240364,  208.958240364,  208.958240364]
+    };
+
+    this.gyroSensByRange = {
+	  "125DPS":  [228.571428571, 228.571428571, 228.571428571],
+      "250DPS":  [114.285714286, 114.285714286, 114.285714286],
+      "500DPS":  [57.142857143,  57.142857143,  57.142857143],
+      "1000DPS": [28.571428571,  28.571428571,  28.571428571],
+      "2000DPS": [14.285714286,  14.285714286,  14.285714286],
+	  "4000DPS": [7.142857143,  7.142857143,  7.142857143]
+    };
+
+    this.accRange = "2G";
+    this.gyroRange = "250DPS";
+    this.accEnabled = true;
+    this.gyroEnabled = true;
+    this.samplingRateHz = 50; // overwritten by applyOperationalConfig when available
+  }
+
+  setAccelEnabled(v) { this.accEnabled = !!v; }
+  setGyroEnabled(v) { this.gyroEnabled = !!v; }
+  setAccelRange(r) { if (this.accSensByRange[r]) this.accRange = r; }
+  setGyroRange(r) { if (this.gyroSensByRange[r]) this.gyroRange = r; }
+
+  _applyAlignAndOffset(raw3) {
+    const v = [
+      raw3[0] - this.offset[0],
+      raw3[1] - this.offset[1],
+      raw3[2] - this.offset[2]
+    ];
+    const a = this.align;
+    return [
+      a[0][0]*v[0] + a[0][1]*v[1] + a[0][2]*v[2],
+      a[1][0]*v[0] + a[1][1]*v[1] + a[1][2]*v[2],
+      a[2][0]*v[0] + a[2][1]*v[1] + a[2][2]*v[2],
+    ];
+  }
+
+  /**
+   * Payload decoding
+   * Assumes SAME streaming layout as your LSM6DS3 implementation:
+   * - gyro+accel: [gx gy gz][ax ay az] => 12 bytes/sample (i16 LE each axis)
+   * - gyro only:  6 bytes/sample
+   * - accel only: 6 bytes/sample
+   *
+   * If firmware changes the DSV ordering/packing, update this function only.
+   */
+  parsePayload(sensorPayloadBytes) {
+    let bytesPerSample = 6;
+    if (this.gyroEnabled && this.accEnabled) bytesPerSample = 12;
+
+    const n = Math.floor(sensorPayloadBytes.length / bytesPerSample);
+    const out = [];
+
+    for (let i = 0; i < n; i++) {
+      const base = i * bytesPerSample;
+
+      let gyroRaw = null, gyroCal = null;
+      let accRaw = null, accCal = null;
+
+      if (this.gyroEnabled && this.accEnabled) {
+        gyroRaw = [
+          i16le(sensorPayloadBytes, base + 0),
+          i16le(sensorPayloadBytes, base + 2),
+          i16le(sensorPayloadBytes, base + 4)
+        ];
+        accRaw = [
+          i16le(sensorPayloadBytes, base + 6),
+          i16le(sensorPayloadBytes, base + 8),
+          i16le(sensorPayloadBytes, base + 10)
+        ];
+      } else if (this.gyroEnabled) {
+        gyroRaw = [
+          i16le(sensorPayloadBytes, base + 0),
+          i16le(sensorPayloadBytes, base + 2),
+          i16le(sensorPayloadBytes, base + 4)
+        ];
+      } else if (this.accEnabled) {
+        accRaw = [
+          i16le(sensorPayloadBytes, base + 0),
+          i16le(sensorPayloadBytes, base + 2),
+          i16le(sensorPayloadBytes, base + 4)
+        ];
+      }
+
+      if (accRaw) {
+        const aligned = this._applyAlignAndOffset(accRaw);
+        const s = this.accSensByRange[this.accRange] ?? this.accSensByRange["2G"];
+        accCal = [ aligned[0]/s[0], aligned[1]/s[1], aligned[2]/s[2] ];
+      }
+      if (gyroRaw) {
+        const aligned = this._applyAlignAndOffset(gyroRaw);
+        const s = this.gyroSensByRange[this.gyroRange] ?? this.gyroSensByRange["250DPS"];
+        gyroCal = [ aligned[0]/s[0], aligned[1]/s[1], aligned[2]/s[2] ];
+      }
+
+      out.push({
+        accel: accRaw ? { raw: accRaw, cal: accCal, units: "m/s^2" } : null,
+        gyro:  gyroRaw ? { raw: gyroRaw, cal: gyroCal, units: "deg/s" } : null
+      });
+    }
+
+    return out;
+  }
+
+  /**
+   * Operational config parsing
+   * Assumes SAME opconfig layout/indexes as LSM6DS3:
+   * - GEN_CFG_0: bit6 accel2 enable, bit5 gyro enable
+   * - GYRO_ACCEL2_CFG_4: accel ODR hi nibble, gyro ODR low nibble
+   * - GYRO_ACCEL2_CFG_5: accel range bits (>>2)&3, gyro range bits (>>4)&3
+   *
+   * If DSV uses different indexes or bit meanings, adjust here only.
+   */
+  applyOperationalConfig(op) {
+    // Enabled flags
+    this.accEnabled  = (op[OP_IDX.GEN_CFG_0] & 0b01000000) !== 0;
+    this.gyroEnabled = (op[OP_IDX.GEN_CFG_0] & 0b00100000) !== 0;
+
+    // ODR nibble(s)
+    const cfg4 = op[OP_IDX.GYRO_ACCEL2_CFG_4];
+    const accelRateCfg = (cfg4 >> 4) & 0x0F;
+    const gyroRateCfg  = (cfg4 >> 0) & 0x0F;
+
+    /**
+     * TODO: Confirm DSV ODR mapping matches DS3.
+     * If firmware preserved the same "Settings" map, this is fine.
+     */
+    const hzByCfg = {
+      0: null,
+      1: 12.5,
+      2: 26,
+      3: 52,
+      4: 104,
+      5: 208,
+      6: 416,
+      7: 833,
+      8: 1660
+      // Add more if DSV exposes higher ODRs via firmware
+    };
+
+    // Range bits
+    const cfg5 = op[OP_IDX.GYRO_ACCEL2_CFG_5];
+    const accelRangeCfg = (cfg5 >> 2) & 0x03;
+    const gyroRangeCfg  = (cfg5 >> 4) & 0x03;
+
+    /**
+     * TODO: Confirm DSV range maps match DS3.
+     * If DSV supports additional ranges, expand these maps + sens tables.
+     */
+    const accelRangeMap = { 0: "2G", 1: "4G", 2: "8G", 3: "16G" };
+    const gyroRangeMap  = { 0: "250DPS", 1: "500DPS", 2: "1000DPS", 3: "2000DPS" };
+
+    this.setAccelRange(accelRangeMap[accelRangeCfg] ?? this.accRange);
+    this.setGyroRange(gyroRangeMap[gyroRangeCfg] ?? this.gyroRange);
+
+    // choose accel as main ODR, fallback to gyro
+    const hz = hzByCfg[accelRateCfg] ?? hzByCfg[gyroRateCfg];
+    if (hz) this.samplingRateHz = hz;
+  }
+}
+
 // ---------- sensor: LSM6DS3 accel/gyro (id=3) ----------
 class SensorLSM6DS3 extends SensorBase {
   constructor() {
@@ -971,7 +1161,7 @@ export class VerisenseBleDevice extends TinyEmitter {
     this.emit("connected", { name: this.device.name, id: this.device.id });
 	 
     await this.readProductionConfigFromDevice();	
-	
+	this._selectSensorsFromProductionInfo();   
 	await this.readOpConfigFromDevice();
 	
     return true;
@@ -1748,9 +1938,61 @@ async readProductionConfigFromDevice() {
   }
 
   this.productionConfig = prod;
+  const parsed = parseProductionConfigPayload(prod)
   console.log("Production Config:", prod);
-  console.log("Production Config:", parseProductionConfigPayload(prod));
+  console.log("Production Config:", parsed);
   this.emit("Production Config", parseProductionConfigPayload(prod));
+}
+
+// "68.9.0" => { maj:68, min:9, intr:0, key: 68009000 }
+_parseHwVersion(str) {
+  const [maj, min, intr] = String(str ?? "0.0.0")
+    .split(".")
+    .map(s => Number.parseInt(s, 10));
+
+  const M = Number.isFinite(maj) ? maj : 0;
+  const m = Number.isFinite(min) ? min : 0;
+  const i = Number.isFinite(intr) ? intr : 0;
+
+  // 3 digits per segment, so comparisons behave as expected
+  const key = (M * 1_000_000) + (m * 1_000) + i;
+  return { maj: M, min: m, intr: i, key };
+}
+
+// Per-hardware-type minimum versions that imply LSM6DSV
+_isLsm6dsvHardware(prodInfo) {
+  const dev = this._parseHwVersion(prodInfo?.hardware);
+
+  // thresholds by hardware "type" (= maj)
+  const minByType = {
+    61: this._parseHwVersion("61.5.0").key, // type 61 => >= 5.0
+    68: this._parseHwVersion("68.9.0").key  // type 68 => >= 9.0
+  };
+
+  const minKey = minByType[dev.maj];
+  if (!minKey) return false;          // unknown hardware type -> default DS3
+  return dev.key >= minKey;
+}
+_selectSensorsFromProductionInfo() {
+  const info = this.productionInfo ?? (this.productionConfig ? parseProductionConfigPayload(this.productionConfig) : null);
+  if (!info) return;
+
+  const useDsv = this._isLsm6dsvHardware(info);
+
+  // Keep sensorId = 3 the same; only swap the decoder/patcher implementation.
+  this.sensors[3] = useDsv ? new SensorLSM6DSV() : new SensorLSM6DS3();
+	console.log(
+	  `[Verisense] Sensor#3 selected: ${useDsv ? "LSM6DSV" : "LSM6DS3"} (hw=${info.hardware})`
+	);
+  // If you rely on hardwareIdentifier in sensors, re-apply if needed (LSM sensors may not need it)
+  // this.sensors[3].setHardwareIdentifier?.(this.hardwareIdentifier);
+
+  // If op config already exists for some reason, apply it to the new instance
+  if (this.operationalConfig && this.sensors[3]?.applyOperationalConfig) {
+    try { this.sensors[3].applyOperationalConfig(this.operationalConfig); } catch {}
+  }
+
+  this.emit("sensorMapUpdated", { sensorId: 3, kind: useDsv ? "LSM6DSV" : "LSM6DS3", hw: info.hardware, asmid: info.asmid });
 }
 
 /**
