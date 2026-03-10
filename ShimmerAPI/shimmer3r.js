@@ -91,6 +91,9 @@ const CHANNEL_FORMATS = {
   0x04: { name: 'WR_ACCEL_X', fmt: 'i16', endian: 'le', sizeBytes: 2 },
   0x05: { name: 'WR_ACCEL_Y', fmt: 'i16', endian: 'le', sizeBytes: 2 },
   0x06: { name: 'WR_ACCEL_Z', fmt: 'i16', endian: 'le', sizeBytes: 2 },
+  0x14: { name: 'HG_ACCEL_X', fmt: 'i12*', endian: 'le', sizeBytes: 2 },
+  0x15: { name: 'HG_ACCEL_Y', fmt: 'i12*', endian: 'le', sizeBytes: 2 },
+  0x16: { name: 'HG_ACCEL_Z', fmt: 'i12*', endian: 'le', sizeBytes: 2 },
   0x0A: { name: 'GYRO_X', fmt: 'i16', endian: 'le', sizeBytes: 2 },
   0x0B: { name: 'GYRO_Y', fmt: 'i16', endian: 'le', sizeBytes: 2 },
   0x0C: { name: 'GYRO_Z', fmt: 'i16', endian: 'le', sizeBytes: 2 },
@@ -121,7 +124,7 @@ export class Shimmer3RClient {
     this._rxBuf=new Uint8Array(0);
     this._temps=new Set();
 
-    this.schema=null; // { timestampFmt, fields[], frameBytes, hasPacked12 }
+    this.schema=null; // { timestampFmt, fields[], frameBytes }
     this.debug = opts.debug ?? true;
 
     // Force a specific timestamp width; defaults to 'u24' per your device.
@@ -623,8 +626,8 @@ export class Shimmer3RClient {
 
     // ✅ Include DATA preamble (0x00) in frame size for boundary check
     let packetSize = 1 + ts.sizeBytes; // 1 = preamble 0x00
-    let hasPacked12 = false;
-    let enabledSensors = 0;
+    
+	let enabledSensors = 0;
 
     for (const id of channelIds) {
       const fmt = CHANNEL_FORMATS[id];
@@ -637,14 +640,14 @@ export class Shimmer3RClient {
       fields.push({ id, ...fmt });
       packetSize += fmt.sizeBytes || 2;
 
-      if (fmt.fmt === 'u12' || fmt.fmt === 'i12') hasPacked12 = true;
-
-      // Minimal sensor bitmask mapping (extend as needed)
+            // Minimal sensor bitmask mapping (extend as needed)
       switch (id) {
         case 0x00: case 0x01: case 0x02:
           enabledSensors |= SensorBitmapShimmer3.SENSOR_A_ACCEL; break;
         case 0x04: case 0x05: case 0x06:
           enabledSensors |= SensorBitmapShimmer3.SENSOR_D_ACCEL; break;
+		case 0x014: case 0x015: case 0x016:
+          enabledSensors |= SensorBitmapShimmer3.SENSOR_ACCEL_ALT; break;
         case 0x07: case 0x08: case 0x09:
           enabledSensors |= SensorBitmapShimmer3.SENSOR_MAG; break;
         case 0x0A: case 0x0B: case 0x0C:
@@ -672,7 +675,6 @@ export class Shimmer3RClient {
       timestampFmt,
       fields,
       frameBytes: packetSize,          // ✅ inclusive of preamble
-      hasPacked12,
       enabledSensors,
       dataPreambleByte: 0x00
     };
@@ -778,6 +780,14 @@ export class Shimmer3RClient {
 			  case 'u24':
 				v = f.endian === 'be' ? u24be(frame, cursor) : u24le(frame, cursor);
 				break;				
+			  case 'i12*': {
+                const msb = frame[cursor] & 0xFF;
+                const lsb = frame[cursor + 1] & 0xFF;
+                const raw12 = (msb << 4) | (lsb >> 4);
+                // Two's complement on 12-bit value
+                v = (raw12 & 0x800) ? (raw12 - 0x1000) : raw12;
+                break;
+              }																 
               case 'u8':  v = frame[cursor]; break;
               default:    v = u16le(frame, cursor); // fallback
             }
