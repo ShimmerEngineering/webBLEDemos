@@ -122,6 +122,7 @@ const OP_IDX = Object.freeze({
 });
 
 const READ_DATA_REQ = new Uint8Array([0x12, 0x00, 0x00]);
+const DISCONNECT_REQ = new Uint8Array([0x2B, 0x00, 0x00]);
 const DATA_ACK      = new Uint8Array([0x82, 0x00, 0x00]);
 const DATA_NACK     = new Uint8Array([0x72, 0x00, 0x00]);
 const DATA_EOS_HDR  = 0x42;
@@ -1162,6 +1163,7 @@ async disconnect({ reason = null } = {}) {
     try { await this._serialDisconnect(reason || "user");
     } catch {}
   } else {
+	this.writeBytes(DISCONNECT_REQ, { withResponse: false });  
     try { if (this.rx) await this.rx.stopNotifications?.(); } catch {}
     try { if (this._onGattDisconnected && this.device) this.device.removeEventListener("gattserverdisconnected", this._onGattDisconnected); } catch {}
     try { if (this.device?.gatt?.connected) this.device.gatt.disconnect(); } catch {}
