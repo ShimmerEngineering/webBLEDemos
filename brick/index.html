@@ -173,7 +173,7 @@
   constructor({ role, moveCfg = {}, rotateCfg = {}, onLog = () => {} }) {
     this.role = role;
     this.onLog = onLog;
-    this.client = new Shimmer3RClient({ timestampFmt: 'u24', debug: true });
+    this.client = new Shimmer3RClient({ timestampFmt: 'u24', debug: false });
 
     this.device = null;
     this.latest = null;
@@ -497,11 +497,11 @@ function clearLines(){
   // BLE UI wiring (Move)
   const nameMove = document.getElementById('nameMove');
   document.getElementById('scanMove').onclick = async()=>{
-    try{ const d=await mover.scan(); nameMove.textContent = 'Selected: '+(d.name||'Unnamed'); document.getElementById('connectMove').disabled=false; }
+    try{ const d=await mover.scan(); nameMove.textContent = 'Selected: '+(d.name||'Unnamed'); document.getElementById('connectMove').disabled=false; document.getElementById('discMove').disabled = false;}
     catch(e){ log('Scan (Move) cancelled or failed'); }
   };
   document.getElementById('connectMove').onclick = async()=>{
-    try{ await mover.configure(); document.getElementById('streamMove').disabled=false; document.getElementById('discMove').disabled=false; nameMove.textContent = 'Connected: '+(mover.device?.name||'Device'); }
+    try{ await mover.configure(); document.getElementById('streamMove').disabled=false; document.getElementById('discMove').disabled=false; nameMove.textContent = 'Configured: '+(mover.device?.name||'Device'); }
     catch(e){ log('Connect (Move) failed'); }
   };
   document.getElementById('streamMove').onclick = async()=>{
@@ -513,11 +513,11 @@ function clearLines(){
   // BLE UI wiring (Rotate)
   const nameRot = document.getElementById('nameRot');
   document.getElementById('scanRot').onclick = async()=>{
-    try{ const d=await rotator.scan(); nameRot.textContent = 'Selected: '+(d.name||'Unnamed'); document.getElementById('connectRot').disabled=false; }
+    try{ const d=await rotator.scan(); nameRot.textContent = 'Selected: '+(d.name||'Unnamed'); document.getElementById('connectRot').disabled=false; document.getElementById('discRot').disabled = false;}
     catch(e){ log('Scan (Rotate) cancelled or failed'); }
   };
   document.getElementById('connectRot').onclick = async()=>{
-    try{ await rotator.configure(); document.getElementById('streamRot').disabled=false; document.getElementById('discRot').disabled=false; nameRot.textContent = 'Connected: '+(rotator.device?.name||'Device'); }
+    try{ await rotator.configure(); document.getElementById('streamRot').disabled=false; document.getElementById('discRot').disabled=false; nameRot.textContent = 'Configured: '+(rotator.device?.name||'Device'); }
     catch(e){ log('Connect (Rotate) failed'); }
   };
   document.getElementById('streamRot').onclick = async()=>{
