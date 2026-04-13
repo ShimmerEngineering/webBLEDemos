@@ -518,7 +518,7 @@ function clearLines(){
   };
   document.getElementById('connectRot').onclick = async()=>{
     try{ await rotator.configure(); document.getElementById('streamRot').disabled=false; document.getElementById('discRot').disabled=false; nameRot.textContent = 'Connected: '+(rotator.device?.name||'Device'); }
-    catch(e){ log('Connect (Rotate) failed'); }
+    catch(e){ log('Configure (Rotate) failed'); }
   };
   document.getElementById('streamRot').onclick = async()=>{
     try{ await rotator.startStreaming(); }
