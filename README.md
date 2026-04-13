@@ -6,24 +6,24 @@ If sufficient interest is registered, we may prioritize building a more fully sc
 - Shimmer3R
 - FW Version >= v1.0.22
 
-[Gyro Example](https://shimmerengineering.github.io/webBLEDemos/break-gyro/)
+[Gyro Example](https://shimmerresearch.github.io/webBLEDemos/break-gyro/)
 
-[EMG Example](https://shimmerengineering.github.io/webBLEDemos/break-emg/)
+[EMG Example](https://shimmerresearch.github.io/webBLEDemos/break-emg/)
 
-[200G Accel Example](https://shimmerengineering.github.io/webBLEDemos/punch-highG/)
+[200G Accel Example](https://shimmerresearch.github.io/webBLEDemos/punch-highG/)
 
-[EMG+GYRO Example](https://shimmerengineering.github.io/webBLEDemos/rythmgame-emggyro/)
+[EMG+GYRO Example](https://shimmerresearch.github.io/webBLEDemos/rythmgame-emggyro/)
 
-[PPG Example](https://shimmerengineering.github.io/webBLEDemos/video-ppg/)
+[PPG Example](https://shimmerresearch.github.io/webBLEDemos/video-ppg/)
 
-[Two Gyro Example](https://shimmerengineering.github.io/webBLEDemos/brick/)
+[Two Gyro Example](https://shimmerresearch.github.io/webBLEDemos/brick/)
 
-[Shimmer Capture](https://shimmerengineering.github.io/webBLEDemos/ShimmerCapture/)
+[Shimmer Capture](https://shimmerresearch.github.io/webBLEDemos/ShimmerCapture/)
 
 [Shimmer3R Chrome Extension](https://github.com/ShimmerEngineering/webBLEDemos/tree/main/shimmer-extension) source code only, will require loading this locally via Chrome
 
 # Requirements
 - Verisense
 
-[Wrist Sensor Example](https://shimmerengineering.github.io/webBLEDemos/Verisense/)
+[Wrist Sensor Example](https://shimmerresearch.github.io/webBLEDemos/Verisense/)
 
