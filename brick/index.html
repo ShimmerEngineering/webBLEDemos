@@ -502,7 +502,7 @@ function clearLines(){
   };
   document.getElementById('connectMove').onclick = async()=>{
     try{ await mover.configure(); document.getElementById('streamMove').disabled=false; document.getElementById('discMove').disabled=false; nameMove.textContent = 'Connected: '+(mover.device?.name||'Device'); }
-    catch(e){ log('Connect (Move) failed'); }
+    catch(e){ log('Configure (Move) failed'); }
   };
   document.getElementById('streamMove').onclick = async()=>{
     try{ await mover.startStreaming(); }
