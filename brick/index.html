@@ -137,7 +137,7 @@
             <h4 style="margin:0 0 8px">Device A — Move (⟵ ⟶)</h4>
             <div class="row" style="gap:8px">
               <button id="scanMove" class="b acc2">🔍 Scan</button>
-              <button id="connectMove" class="b" disabled>🔗 Connect</button>
+              <button id="connectMove" class="b" disabled>Configure</button>
               <button id="streamMove" class="b warn" disabled>📡 Stream</button>
               <button id="discMove" class="b dang" disabled>❌</button>
             </div>
@@ -148,7 +148,7 @@
             <h4 style="margin:0 0 8px">Device B — Rotate (⤿ ⤾)</h4>
             <div class="row" style="gap:8px">
               <button id="scanRot" class="b acc2">🔍 Scan</button>
-              <button id="connectRot" class="b" disabled>🔗 Connect</button>
+              <button id="connectRot" class="b" disabled>Configure</button>
               <button id="streamRot" class="b warn" disabled>📡 Stream</button>
               <button id="discRot" class="b dang" disabled>❌</button>
             </div>
@@ -166,88 +166,119 @@
     </div>
   </div>
 
-  <script>
+  <script type="module">
+  import { Shimmer3RClient, SensorBitmapShimmer3 } from '../ShimmerAPI/shimmer3r.js';
   // ===== BLE Controller (Shimmer) =====
   class ShimmerGyroController {
-    constructor({ role, serviceUUID, rxUUID, txUUID, moveCfg = {}, rotateCfg = {}, onLog = () => {} }) {
-      this.role = role; // "move" | "rotate"
-      this.serviceUUID = serviceUUID; this.rxUUID = rxUUID; this.txUUID = txUUID;
-      this.onLog = onLog;
-      this.device = null; this.server = null; this.rx = null; this.tx = null;
-      this.receiveBuffer = new Uint8Array(0); this.latest = null;
-      this.deadzone = moveCfg.deadzone ?? 1100; this.moveRepeatMs = moveCfg.repeatMs ?? 120;
-      this.rotateThreshold = rotateCfg.threshold ?? 1500; this.rotateCooldownMs = rotateCfg.cooldownMs ?? 250;
-      this._moveTimer = null; this._moveDir = 0; this._rotateCooldownUntil = 0;
-      this._zWindow = []; this._windowSize = 5;
-      // hooks
-      this.onMoveLeft = () => {}; this.onMoveRight = () => {}; this.onMoveStop = () => {};
-      this.onRotateCW = () => {}; this.onRotateCCW = () => {};
-    }
-    async scan(){ this.device = await navigator.bluetooth.requestDevice({ filters:[{ services:[this.serviceUUID] }]}); return this.device; }
-    async connect(){ if(!this.device) throw new Error("No device selected");
-      this.server = await this.device.gatt.connect();
-      const svc = await this.server.getPrimaryService(this.serviceUUID);
-      this.rx = await svc.getCharacteristic(this.rxUUID);
-      this.tx = await svc.getCharacteristic(this.txUUID);
-      await this.tx.startNotifications();
-      this.tx.addEventListener('characteristicvaluechanged', (e)=>this._onNotify(e));
-      this.onLog(`✅ [${this.role}] Connected to ${this.device.name||'device'}`);
-    }
-    async startStreaming(){ if(!this.rx) throw new Error('Not connected');
-      await this.rx.writeValue(new Uint8Array([0x05,0x80,0x02]));
-      await this._sleep(200);
-      await this.rx.writeValue(new Uint8Array([0x08,0x40,0x00,0x00]));
-      await this._sleep(200);
-      await this.rx.writeValue(new Uint8Array([0x07]));
-      this.onLog(`📡 [${this.role}] Streaming started`);
-    }
-    async disconnect(){ try{
-        if(this.tx){ await this.tx.stopNotifications(); }
-        if(this.device?.gatt?.connected){ this.device.gatt.disconnect(); }
-      } finally {
-        this.device=this.server=this.rx=this.tx=null; this._stopMoveRepeat();
-        this.onLog(`🔌 [${this.role}] Disconnected`);
-      }
-    }
-    _onNotify(event){
-      const chunk = new Uint8Array(event.target.value.buffer);
-      const merged = new Uint8Array(this.receiveBuffer.length + chunk.length);
-      merged.set(this.receiveBuffer); merged.set(chunk, this.receiveBuffer.length);
-      this.receiveBuffer = merged; let offset=0;
-      while(this.receiveBuffer.length - offset > 0){
-        const remaining = this.receiveBuffer.length - offset;
-        if(remaining===1 && this.receiveBuffer[offset]===0xFF){ offset+=1; break; }
-        if(remaining>=10 && this.receiveBuffer[offset]===0x00){
-          const pkt = this.receiveBuffer.slice(offset, offset+10);
-          const view = new DataView(pkt.buffer);
-          const gx=view.getInt16(4,true), gy=view.getInt16(6,true), gz=view.getInt16(8,true);
-          this.latest = {gx,gy,gz}; this._processGyro(gx,gy,gz); offset+=10;
-        } else { offset+=1; }
-      }
-      this.receiveBuffer = this.receiveBuffer.slice(offset);
-    }
-    _processGyro(gx,gy,gz){
-      this._zWindow.push(gz); if(this._zWindow.length>this._windowSize) this._zWindow.shift();
-      const z = Math.round(this._zWindow.reduce((a,b)=>a+b,0)/this._zWindow.length);
-      const now = performance.now();
-      if(this.role==='move'){
-        let dir = 0; if(z>this.deadzone) dir=+1; else if(z<-this.deadzone) dir=-1;
-        if(dir!==this._moveDir){ this._moveDir=dir; this._stopMoveRepeat();
-          if(dir===+1) this._startMoveRepeat(()=>this.onMoveRight());
-          else if(dir===-1) this._startMoveRepeat(()=>this.onMoveLeft());
-          else this.onMoveStop();
-        }
-      } else if(this.role==='rotate'){
-        if(now>=this._rotateCooldownUntil){
-          if(z>this.rotateThreshold){ this.onRotateCW(); this._rotateCooldownUntil=now+this.rotateCooldownMs; }
-          else if(z<-this.rotateThreshold){ this.onRotateCCW(); this._rotateCooldownUntil=now+this.rotateCooldownMs; }
-        }
-      }
-    }
-    _startMoveRepeat(action){ action(); this._moveTimer=setInterval(action, this.moveRepeatMs); }
-    _stopMoveRepeat(){ if(this._moveTimer){ clearInterval(this._moveTimer); this._moveTimer=null; } }
-    _sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+  constructor({ role, moveCfg = {}, rotateCfg = {}, onLog = () => {} }) {
+    this.role = role;
+    this.onLog = onLog;
+    this.client = new Shimmer3RClient({ timestampFmt: 'u24', debug: false });
+
+    this.device = null;
+    this.latest = null;
+
+    this.deadzone = moveCfg.deadzone ?? 1100;
+    this.moveRepeatMs = moveCfg.repeatMs ?? 120;
+    this.rotateThreshold = rotateCfg.threshold ?? 1500;
+    this.rotateCooldownMs = rotateCfg.cooldownMs ?? 250;
+
+    this._moveTimer = null;
+    this._moveDir = 0;
+    this._rotateCooldownUntil = 0;
+    this._zWindow = [];
+    this._windowSize = 5;
+
+    this.onMoveLeft = () => {};
+    this.onMoveRight = () => {};
+    this.onMoveStop = () => {};
+    this.onRotateCW = () => {};
+    this.onRotateCCW = () => {};
+
+    this.client.onStatus = (msg) => this.onLog(`[${this.role}] ${msg}`);
+    this.client.onStreamFrame = (oc) => {
+      const gx = oc.get('GYRO_X')?.value;
+      const gy = oc.get('GYRO_Y')?.value;
+      const gz = oc.get('GYRO_Z')?.value;
+      if (typeof gx !== 'number' || typeof gy !== 'number' || typeof gz !== 'number') return;
+      this.latest = { gx, gy, gz };
+      this._processGyro(gx, gy, gz);
+    };
   }
+
+  async scan() {
+    await this.client.connect();
+    this.device = this.client.device;
+    return this.device;
+  }
+
+  async configure() {
+    if (!this.client.device) throw new Error('No device selected');
+    await this.client.setSamplingRate(128);
+    await this.client.setSensors(SensorBitmapShimmer3.SENSOR_GYRO);
+    this.onLog(`✅ [${this.role}] Connected to ${this.client.device?.name || 'device'}`);
+  }
+
+  async startStreaming() {
+    await this.client.startStreaming();
+    this.onLog(`📡 [${this.role}] Streaming started`);
+  }
+
+  async disconnect() {
+    try {
+      await this.client.stopStreaming().catch(() => {});
+      await this.client.disconnect();
+    } finally {
+      this.device = null;
+      this.latest = null;
+      this._stopMoveRepeat();
+      this.onLog(`🔌 [${this.role}] Disconnected`);
+    }
+  }
+
+  _processGyro(gx, gy, gz) {
+    this._zWindow.push(gz);
+    if (this._zWindow.length > this._windowSize) this._zWindow.shift();
+    const z = Math.round(this._zWindow.reduce((a, b) => a + b, 0) / this._zWindow.length);
+    const now = performance.now();
+
+    if (this.role === 'move') {
+      let dir = 0;
+      if (z > this.deadzone) dir = +1;
+      else if (z < -this.deadzone) dir = -1;
+
+      if (dir !== this._moveDir) {
+        this._moveDir = dir;
+        this._stopMoveRepeat();
+        if (dir === +1) this._startMoveRepeat(() => this.onMoveRight());
+        else if (dir === -1) this._startMoveRepeat(() => this.onMoveLeft());
+        else this.onMoveStop();
+      }
+    } else if (this.role === 'rotate') {
+      if (now >= this._rotateCooldownUntil) {
+        if (z > this.rotateThreshold) {
+          this.onRotateCW();
+          this._rotateCooldownUntil = now + this.rotateCooldownMs;
+        } else if (z < -this.rotateThreshold) {
+          this.onRotateCCW();
+          this._rotateCooldownUntil = now + this.rotateCooldownMs;
+        }
+      }
+    }
+  }
+
+  _startMoveRepeat(action) {
+    action();
+    this._moveTimer = setInterval(action, this.moveRepeatMs);
+  }
+
+  _stopMoveRepeat() {
+    if (this._moveTimer) {
+      clearInterval(this._moveTimer);
+      this._moveTimer = null;
+    }
+  }
+}
 
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
@@ -466,11 +497,11 @@ function clearLines(){
   // BLE UI wiring (Move)
   const nameMove = document.getElementById('nameMove');
   document.getElementById('scanMove').onclick = async()=>{
-    try{ const d=await mover.scan(); nameMove.textContent = 'Selected: '+(d.name||'Unnamed'); document.getElementById('connectMove').disabled=false; }
+    try{ const d=await mover.scan(); nameMove.textContent = 'Selected: '+(d.name||'Unnamed'); document.getElementById('connectMove').disabled=false; document.getElementById('discMove').disabled = false;}
     catch(e){ log('Scan (Move) cancelled or failed'); }
   };
   document.getElementById('connectMove').onclick = async()=>{
-    try{ await mover.connect(); document.getElementById('streamMove').disabled=false; document.getElementById('discMove').disabled=false; nameMove.textContent = 'Connected: '+(mover.device?.name||'Device'); }
+    try{ await mover.configure(); document.getElementById('streamMove').disabled=false; document.getElementById('discMove').disabled=false; nameMove.textContent = 'Configured: '+(mover.device?.name||'Device'); }
     catch(e){ log('Connect (Move) failed'); }
   };
   document.getElementById('streamMove').onclick = async()=>{
@@ -482,11 +513,11 @@ function clearLines(){
   // BLE UI wiring (Rotate)
   const nameRot = document.getElementById('nameRot');
   document.getElementById('scanRot').onclick = async()=>{
-    try{ const d=await rotator.scan(); nameRot.textContent = 'Selected: '+(d.name||'Unnamed'); document.getElementById('connectRot').disabled=false; }
+    try{ const d=await rotator.scan(); nameRot.textContent = 'Selected: '+(d.name||'Unnamed'); document.getElementById('connectRot').disabled=false; document.getElementById('discRot').disabled = false;}
     catch(e){ log('Scan (Rotate) cancelled or failed'); }
   };
   document.getElementById('connectRot').onclick = async()=>{
-    try{ await rotator.connect(); document.getElementById('streamRot').disabled=false; document.getElementById('discRot').disabled=false; nameRot.textContent = 'Connected: '+(rotator.device?.name||'Device'); }
+    try{ await rotator.configure(); document.getElementById('streamRot').disabled=false; document.getElementById('discRot').disabled=false; nameRot.textContent = 'Configured: '+(rotator.device?.name||'Device'); }
     catch(e){ log('Connect (Rotate) failed'); }
   };
   document.getElementById('streamRot').onclick = async()=>{
